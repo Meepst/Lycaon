@@ -1,0 +1,18 @@
+[submodule "external/vk-bootstrap"]
+	path = external/vk-bootstrap
+	url = https://github.com/charles-lunarg/vk-bootstrap
+[submodule "dependencies/vma"]
+	path = dependencies/vma
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "dependencies/glfw"]
+	path = dependencies/glfw
+	url = git@github.com:glfw/glfw.git
+[submodule "dependencies/vk-bootstrap"]
+	path = dependencies/vk-bootstrap
+	url = git@github.com:charles-lunarg/vk-bootstrap.git
+[submodule "dependencies/cgltf"]
+	path = dependencies/cgltf
+	url = git@github.com:jkuhlmann/cgltf.git
+[submodule "dependencies/glm"]
+	path = dependencies/glm
+	url = git@github.com:icaven/glm.git
