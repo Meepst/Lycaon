@@ -8,7 +8,7 @@
 #include <deque>
 #include <functional>
 #include <stb_image.h>
-#include <cgltf.h>
+#include <iostream>
 
 struct DrawPushConstants{
     glm::mat4 worldMatrix;
@@ -41,14 +41,6 @@ struct alignas(16) Ray{
 struct alignas(16) Camera{
     glm::mat4 viewInverse;
     glm::mat4 projInverse;
-};
-
-struct alignas(16) Vertex{
-    glm::vec3 position;
-    float uv_x;
-    glm::vec3 normal;
-    float uv_y;
-    glm::vec4 color;
 };
 
 void drawBackground(VkCommandBuffer commandBuffer, VkImage image){
@@ -314,6 +306,18 @@ int main(){
         vkDestroyCommandPool(device, initCommandPool, nullptr);
 	});
 
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+	std::vector<Material> materials;
+	std::vector<std::string> texturePaths;
+	const char* scenePath = "assets/barramundiFish/glTF/BarramundiFish.gltf";
+	if(!parseScene(scenePath,vertices,indices,materials,texturePaths)){
+	    printf("failed to load gltf scene\n");
+	}
+
+	for(const auto& tex : texturePaths){
+        std::cout<<tex<<std::endl;
+	}
 
     int frameIndex = 0;
     while(!glfwWindowShouldClose(window)){
