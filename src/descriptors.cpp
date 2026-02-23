@@ -1,174 +1,164 @@
 #include "descriptors.h"
 
-void DescriptorLayoutBuilder::addBinding(uint32_t binding, VkDescriptorType type){
-    VkDescriptorSetLayoutBinding newbinding{};
-    newbinding.binding = binding;
-    newbinding.descriptorCount = 1;
-    newbinding.descriptorType = type;
-
-    bindings.push_back(newbinding);
-}
-
-void DescriptorLayoutBuilder::clear(){
-    bindings.clear();
-}
-
-VkDescriptorSetLayout DescriptorLayoutBuilder::build(VkDevice device, VkShaderStageFlags shaderStages, void* pNext, VkDescriptorSetLayoutCreateFlags flags){
-    for(auto& bind : bindings){
-        bind.stageFlags |= shaderStages;
+namespace vkdh{
+    static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
+        return (value + alignment - 1) & ~(alignment - 1);
     }
 
-    VkDescriptorSetLayoutCreateInfo createInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    createInfo.pNext = pNext;
+    DescriptorSizeInfo queryDescriptorSizes(VkPhysicalDevice physicalDevice)
+    {
+        VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProps{};
+        heapProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
 
-    createInfo.pBindings = bindings.data();
-    createInfo.bindingCount = (uint32_t)bindings.size();
-    createInfo.flags = flags;
+        VkPhysicalDeviceProperties2 props2{};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props2.pNext = &heapProps;
+        vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
 
-    VkDescriptorSetLayout layout = 0;
-    VK_CHECK(vkCreateDescriptorSetLayout(device, &createInfo, nullptr, &layout));
-
-    return layout;
-}
-
-
-void DescriptorAllocator::initPool(VkDevice device, uint32_t maxSets, std::span<PoolSizeRatio> poolRatios){
-    ratios.clear();
-
-    for(auto r : poolRatios){
-        ratios.push_back(r);
-    }
-    VkDescriptorPool newPool = createPool(device, maxSets, poolRatios);
-
-    setsPerPool = maxSets*1.5;
-    readyPools.push_back(newPool);
-}
-
-VkDescriptorPool DescriptorAllocator::createPool(VkDevice device, uint32_t setCount, std::span<PoolSizeRatio> poolRatios){
-    std::vector<VkDescriptorPoolSize> poolSizes;
-    for(PoolSizeRatio ratio : poolRatios){
-        poolSizes.push_back(VkDescriptorPoolSize{
-           .type = ratio.type,
-           .descriptorCount = uint32_t(ratio.ratio*setCount)
-        });
+        DescriptorSizeInfo info;
+        info.samplerDescriptorSize      = heapProps.samplerDescriptorSize;
+        info.imageDescriptorSize        = heapProps.imageDescriptorSize;
+        info.bufferDescriptorSize       = heapProps.bufferDescriptorSize;
+        info.samplerDescriptorAlignment = heapProps.samplerDescriptorAlignment;
+        info.imageDescriptorAlignment   = heapProps.imageDescriptorAlignment;
+        info.bufferDescriptorAlignment  = heapProps.bufferDescriptorAlignment;
+        return info;
     }
 
-    VkDescriptorPoolCreateInfo createInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    createInfo.flags = 0;
-    createInfo.maxSets = setCount;
-    createInfo.poolSizeCount = (uint32_t)poolSizes.size();
-    createInfo.pPoolSizes = poolSizes.data();
+    DescriptorHeap::~DescriptorHeap()
+    {
+        destroy();
+    }
 
-    VkDescriptorPool newPool;
-    VK_CHECK(vkCreateDescriptorPool(device, &createInfo, nullptr, &newPool));
-    return newPool;
-}
+    DescriptorHeap::DescriptorHeap(DescriptorHeap&& o) noexcept
+    {
+        *this = std::move(o);
+    }
 
-VkDescriptorPool DescriptorAllocator::getPool(VkDevice device){
-    VkDescriptorPool newPool;
-    if(readyPools.size() != 0){
-        newPool = readyPools.back();
-        readyPools.pop_back();
-    }else{
-        newPool = createPool(device, setsPerPool, ratios);
+    DescriptorHeap& DescriptorHeap::operator=(DescriptorHeap&& o) noexcept
+    {
+        if (this != &o) {
+            destroy();
+            _device          = o._device;
+            _buffer          = o._buffer;
+            _memory          = o._memory;
+            _deviceAddress   = o._deviceAddress;
+            _heapSize        = o._heapSize;
+            _descriptorStride = o._descriptorStride;
+            _mappedPtr       = o._mappedPtr;
+            _capacity        = o._capacity;
+            _allocatedCount  = o._allocatedCount;
+            _reservedRangeOffset = o._reservedRangeOffset;
+            _reservedRangeSize   = o._reservedRangeSize;
+            _vmaAllocator    = o._vmaAllocator;
+            _vmaAllocation   = o._vmaAllocation;
 
-        setsPerPool = setsPerPool*1.5;
-        if(setsPerPool > 4092){
-            setsPerPool = 4092;
+            o._buffer        = VK_NULL_HANDLE;
+            o._memory        = VK_NULL_HANDLE;
+            o._deviceAddress = 0;
+            o._mappedPtr     = nullptr;
+            o._vmaAllocation = nullptr;
         }
+        return *this;
     }
 
-    return newPool;
-}
+    bool DescriptorHeap::createBuffer(const HeapConfig& config,
+                                      VkBufferUsageFlags extraUsage,
+                                      VkDeviceSize descriptorStride)
+    {
+        _device           = config.device;
+        _descriptorStride = descriptorStride;
+        _capacity         = config.maxDescriptors;
+        _allocatedCount   = 0;
+        _reservedRangeOffset = config.reservedRangeOffset;
+        _reservedRangeSize   = config.reservedRangeSize;
+        _vmaAllocator     = config.vmaAllocator;
 
-void DescriptorAllocator::clearPools(VkDevice device){
-    for(auto p : readyPools)
-        vkResetDescriptorPool(device,p,0);
-    for(auto p : fullPools){
-        vkResetDescriptorPool(device, p, 0);
-        readyPools.push_back(p);
+        _heapSize = _reservedRangeOffset + _reservedRangeSize
+                   + static_cast<VkDeviceSize>(_capacity) * _descriptorStride;
+
+        // --- Create VkBuffer ---
+        VkBufferCreateInfo bufferCI{};
+        bufferCI.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferCI.size  = _heapSize;
+        bufferCI.usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT
+                       | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                       | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                       | extraUsage;
+        bufferCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(_device, &bufferCI, nullptr, &_buffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        // --- Allocate memory ---
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(_device, _buffer, &memReqs);
+
+        VkPhysicalDeviceMemoryProperties memProps;
+        vkGetPhysicalDeviceMemoryProperties(config.physicalDevice, &memProps);
+
+        // Find a suitable memory type: prefer DEVICE_LOCAL + HOST_VISIBLE
+        VkMemoryPropertyFlags desired =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if (config.preferDeviceLocal) {
+            desired |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
+
+        auto findMemoryType = [&](VkMemoryPropertyFlags flags) -> int32_t {
+            for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+                if ((memReqs.memoryTypeBits & (1u << i)) &&
+                    (memProps.memoryTypes[i].propertyFlags & flags) == flags) {
+                    return static_cast<int32_t>(i);
+                }
+            }
+            return -1;
+        };
+
+        int32_t memTypeIndex = findMemoryType(desired);
+        if (memTypeIndex < 0 && config.preferDeviceLocal) {
+            // Fall back to HOST_VISIBLE only
+            desired &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            memTypeIndex = findMemoryType(desired);
+        }
+        if (memTypeIndex < 0) {
+            vkDestroyBuffer(_device, _buffer, nullptr);
+            _buffer = VK_NULL_HANDLE;
+            return false;
+        }
+
+        VkMemoryAllocateFlagsInfo allocFlags{};
+        allocFlags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        allocFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.pNext           = &allocFlags;
+        allocInfo.allocationSize  = memReqs.size;
+        allocInfo.memoryTypeIndex = static_cast<uint32_t>(memTypeIndex);
+
+        if (vkAllocateMemory(_device, &allocInfo, nullptr, &_memory) != VK_SUCCESS) {
+            vkDestroyBuffer(_device, _buffer, nullptr);
+            _buffer = VK_NULL_HANDLE;
+            return false;
+        }
+
+        vkBindBufferMemory(_device, _buffer, _memory, 0);
+
+        // Map persistently
+        vkMapMemory(_device, _memory, 0, VK_WHOLE_SIZE, 0, &_mappedPtr);
+
+        // Get device address
+        VkBufferDeviceAddressInfo addrInfo{};
+        addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addrInfo.buffer = _buffer;
+        _deviceAddress = vkGetBufferDeviceAddress(_device, &addrInfo);
+
+        // Zero-initialise the heap memory
+        if (_mappedPtr) {
+            std::memset(_mappedPtr, 0, _heapSize);
+        }
+
+        return true;
     }
-    fullPools.clear();
-}
-
-void DescriptorAllocator::destroyPools(VkDevice device){
-    for(auto p : readyPools)
-        vkDestroyDescriptorPool(device, p, nullptr);
-    readyPools.clear();
-    for(auto p : fullPools){
-        vkDestroyDescriptorPool(device, p, nullptr);
-    }
-    fullPools.clear();
-}
-
-VkDescriptorSet DescriptorAllocator::allocate(VkDevice device, VkDescriptorSetLayout layout){
-    VkDescriptorPool poolToUse = getPool(device);
-
-    VkDescriptorSetAllocateInfo allocInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocInfo.descriptorPool = poolToUse;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &layout;
-
-    VkDescriptorSet descSet;
-    VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
-
-    if(result == VK_ERROR_OUT_OF_POOL_MEMORY || result == VK_ERROR_FRAGMENTED_POOL){
-        fullPools.push_back(poolToUse);
-
-        poolToUse = getPool(device);
-        allocInfo.descriptorPool = poolToUse;
-
-        VK_CHECK(vkAllocateDescriptorSets(device, &allocInfo, &descSet));
-    }
-
-    readyPools.push_back(poolToUse);
-    return descSet;
-}
-
-void DescriptorWriter::writeBuffer(int binding, VkBuffer buffer, size_t size, size_t offset, VkDescriptorType type){
-    VkDescriptorBufferInfo &info = bufferInfos.emplace_back(VkDescriptorBufferInfo{
-       .buffer = buffer,
-       .offset = offset,
-       .range = size
-    });
-
-    VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstBinding = binding;
-    write.dstSet = VK_NULL_HANDLE;
-    write.descriptorCount = 1;
-    write.descriptorType = type;
-    write.pBufferInfo = &info;
-
-    writes.push_back(write);
-}
-
-void DescriptorWriter::writeImage(int binding, VkImageView imageView, VkSampler sampler, VkImageLayout layout, VkDescriptorType type){
-    VkDescriptorImageInfo &info = imageInfos.emplace_back(VkDescriptorImageInfo{
-        .sampler = sampler,
-        .imageView = imageView,
-        .imageLayout = layout
-    });
-
-    VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstBinding = binding;
-    write.dstSet = VK_NULL_HANDLE;
-    write.descriptorCount = 1;
-    write.descriptorType = type;
-    write.pImageInfo = &info;
-
-    writes.push_back(write);
-}
-
-void DescriptorWriter::clear(){
-    imageInfos.clear();
-    writes.clear();
-    bufferInfos.clear();
-}
-
-void DescriptorWriter::updateSet(VkDevice device, VkDescriptorSet set){
-    for(VkWriteDescriptorSet &write : writes){
-        write.dstSet = set;
-    }
-
-    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(),0,nullptr);
 }

@@ -90,6 +90,7 @@ struct alignas(16) Camera{
     glm::vec3 up;
 };
 
+<<<<<<< HEAD
 struct Environment{
     glm::vec3 sunDirection;
     float sunIntensity;
@@ -109,6 +110,8 @@ VkDevice m_device;
 VmaAllocator m_vmaAllocator;
 
 
+=======
+>>>>>>> 5e3bff6ba4b654c10e4437ddec54c4a8f9ee6b8f
 void drawBackground(VkCommandBuffer commandBuffer, VkImage image){
     VkClearColorValue clearValue{};
     clearValue = {{0.2f,0.3f,0.4f,1.0f}};
@@ -407,12 +410,16 @@ int main(){
 	std::vector<uint32_t> indices;
 	std::vector<Material> materials;
 	std::vector<std::string> texturePaths;
+<<<<<<< HEAD
 
+=======
+>>>>>>> 5e3bff6ba4b654c10e4437ddec54c4a8f9ee6b8f
 	const char* scenePath = "assets/barramundiFish/glTF/BarramundiFish.gltf";
 	if(!parseScene(scenePath,vertices,indices,materials,texturePaths)){
 	    printf("failed to load gltf scene\n");
 	}
 
+<<<<<<< HEAD
     Mesh mesh = uploadMesh(m_device, graphicsQueue, initCommandBuffer, m_vmaAllocator, indices, vertices);
     VkBufferUsageFlags bufferUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -469,6 +476,11 @@ int main(){
 	deletionQueue.push_back([&](){
         vkDestroySampler(m_device, linearSampler, nullptr);
 	});
+=======
+	for(const auto& tex : texturePaths){
+        std::cout<<tex<<std::endl;
+	}
+>>>>>>> 5e3bff6ba4b654c10e4437ddec54c4a8f9ee6b8f
 
     int frameIndex = 0;
     while(!glfwWindowShouldClose(window)){
