@@ -220,13 +220,13 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkExtent3D size, VkFo
     if(mipMapped){
         imageInfo.mipLevels = getImageMipLevels(size.width, size.height);
     }
-
+    printf("survived mips, level %u\n",imageInfo.mipLevels);
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
     allocInfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VK_CHECK(vmaCreateImage(allocator, &imageInfo, &allocInfo, &newImage.image,&newImage.allocation,nullptr));
-
+    printf("made image\n");
     VkImageAspectFlags aspectFlag = VK_IMAGE_ASPECT_COLOR_BIT;
     if(format == VK_FORMAT_D32_SFLOAT){
         aspectFlag = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -245,10 +245,11 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkComm
     Buffer uploadBuffer = createBuffer(allocator, dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VMA_MEMORY_USAGE_CPU_TO_GPU);
 
+    printf("made buffer\n");
     memcpy(uploadBuffer.info.pMappedData, data, dataSize);
 
     Image newImage = createImage(allocator, device, size, format, usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mipMapped);
-
+    printf("made pre image");
     VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
 
     VkCommandBufferBeginInfo cmdBufferBeginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -279,7 +280,7 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkComm
 
     VK_CHECK(vkQueueSubmit2(queue, 1, &submitInfo, nullptr));
     vkDeviceWaitIdle(device);
-
+    printf("completed copy");
     destroyBuffer(allocator, uploadBuffer);
     return newImage;
 }

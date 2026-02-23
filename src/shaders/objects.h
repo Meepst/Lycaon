@@ -3,6 +3,17 @@ struct Ray {
     vec3 direction;
 };
 
+struct Vertex {
+    vec3 position;
+    vec3 normal;
+    vec3 uv;
+};
+
+struct Triangle {
+    uint v0, v1, v2;
+    uint materialID;
+};
+
 struct PathSegment {
     Ray ray;
     vec3 throughput;
@@ -21,8 +32,11 @@ struct Intersection {
 };
 
 struct Material {
-    vec3 albedo;
-    vec3 emission;
-    float roughness;
-    float metallic;
+    int albedoTexture;
+    int normalTexture;
+    int specularTexture;
+    int emissiveTexture;
+    vec4 specularFactor;
+    vec4 diffuseFactor;
+    vec3 emissiveFactor;
 };

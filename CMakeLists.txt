@@ -34,6 +34,9 @@ target_link_libraries(Lycaon PRIVATE vk-bootstrap::vk-bootstrap)
 add_subdirectory(dependencies/vma)
 target_link_libraries(Lycaon PRIVATE VulkanMemoryAllocator)
 
+add_subdirectory(dependencies/volk)
+target_link_libraries(Lycaon PRIVATE volk_headers)
+
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

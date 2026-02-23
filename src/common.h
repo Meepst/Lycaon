@@ -1,6 +1,7 @@
 #pragma once
-
+#define VK_NO_PROTOTYPES
 #include <GLFW/glfw3.h>
+#include "volk.h"
 #include "VkBootstrap.h"
 #include "vk_mem_alloc.h"
 #include <cstdint>
