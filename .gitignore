@@ -1,0 +1,15 @@
+.vs/
+build/
+build2/
+out/
+*.obj
+*.exe
+*.pdb
+*.ipch
+*.ilk
+*.log
+*.vcxproj.user
+__cmake_systeminformation/
+imgui.ini
+
+.cache/
