@@ -15,12 +15,17 @@
 #define DEVICE_COUNT 16
 #define FRAMES_IN_FLIGHT 2
 
+#define TASK_GROUP_SIZE 32
+
+#define DESCRIPTOR_LIMIT 65536
+#define DESCRIPTOR_LIMIT_SAMPLERS 16
+#define DESCRIPTOR_LIMIT_FRAME 16384
+
 #define SCREEN_WIDTH 1024
 #define SCREEN_HEIGHT 820
 
 #define MAX_TEXTURES 16384
 
-// 1-4 for realtime 100-1000 for offline
 #define RAYS_PER_PIXEL 1
 
 #define VK_CHECK(call) \

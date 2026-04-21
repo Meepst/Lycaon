@@ -7,18 +7,21 @@ struct Image{
     VmaAllocation allocation;
     VkExtent3D imageExtent;
     VkFormat imageFormat;
+    uint32_t mipLevels = 1;
 };
 
 struct Buffer{
     VkBuffer buffer;
     VmaAllocation allocation;
     VmaAllocationInfo info;
+    VkDeviceAddress address;
+    VkDeviceSize size;
 };
 
 VkCommandPool createCommandPool(VkDevice device, uint32_t familyIndex);
 void createCommandBuffer(VkDevice device, VkCommandPool commandPool, VkCommandBuffer &commandBuffer);
 
-Buffer createBuffer(VmaAllocator allocator, size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+Buffer createBuffer(VkDevice device, VmaAllocator allocator, size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 void destroyBuffer(VmaAllocator allocator, const Buffer& buffer);
 
 Image createImage(VmaAllocator allocator, VkDevice device, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipMapped);

@@ -53,25 +53,108 @@ VkSemaphore createSemaphore(VkDevice device){
 }
 
 void transitionImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout){
-    VkImageMemoryBarrier2 imageBarrier {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+    VkImageMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        barrier.oldLayout = currentLayout;
+        barrier.newLayout = newLayout;
+        barrier.image     = image;
 
-    imageBarrier.oldLayout = currentLayout;
-    imageBarrier.newLayout = newLayout;
+        // --- src: what was the image used for before? ---
+        switch (currentLayout) {
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_NONE;
+            break;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                                  | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_NONE;
+            break;
+        case VK_IMAGE_LAYOUT_GENERAL:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        default:
+            barrier.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        }
 
-    VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        // --- dst: what will the image be used for next? ---
+        switch (newLayout) {
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                                  | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                                  | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                                  | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_NONE;
+            break;
+        case VK_IMAGE_LAYOUT_GENERAL:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT
+                                  | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        default:
+            barrier.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT
+                                  | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        }
 
-    imageBarrier.subresourceRange = createImageSubresourceRange(aspectMask);
-    imageBarrier.image = image;
+        // Determine aspect mask from the actual layouts
+        bool isDepth = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                     || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                     || currentLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                     || currentLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-    VkDependencyInfo depInfo{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    depInfo.imageMemoryBarrierCount = 1;
-    depInfo.pImageMemoryBarriers = &imageBarrier;
+        barrier.subresourceRange = createImageSubresourceRange(
+            isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
 
-    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+        VkDependencyInfo depInfo{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        depInfo.imageMemoryBarrierCount = 1;
+        depInfo.pImageMemoryBarriers    = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 }
 
 VkSemaphoreSubmitInfo createSemaphoreSubmitInfo(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore){
@@ -187,22 +270,30 @@ bool loadShaderModule(const char* filename, VkDevice device, VkShaderModule* out
     if(vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule)){
         return false;
     }
-    printf("hi!\n");
+
     *outShaderModule = shaderModule;
     return true;
 }
 
-Buffer createBuffer(VmaAllocator allocator, size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage){
+Buffer createBuffer(VkDevice device,VmaAllocator allocator, size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage){
     VkBufferCreateInfo bufferInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = allocSize;
-    bufferInfo.usage = usage;
+    bufferInfo.usage = usage | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT;
 
     VmaAllocationCreateInfo vmaAllocInfo{};
     vmaAllocInfo.usage = memoryUsage;
-    vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
+    vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    vmaAllocInfo.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                            | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     Buffer newBuffer;
     VK_CHECK(vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &newBuffer.buffer,&newBuffer.allocation,&newBuffer.info));
+
+    VkBufferDeviceAddressInfo addressInfo = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+    addressInfo.buffer = newBuffer.buffer;
+    newBuffer.address = vkGetBufferDeviceAddress(device, &addressInfo);
+
+    newBuffer.size = allocSize;
 
     return newBuffer;
 }
@@ -219,14 +310,15 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkExtent3D size, VkFo
     VkImageCreateInfo imageInfo = createImageCreateInfo(format, usage, size);
     if(mipMapped){
         imageInfo.mipLevels = getImageMipLevels(size.width, size.height);
+        newImage.mipLevels = imageInfo.mipLevels;
     }
-    printf("survived mips, level %u\n",imageInfo.mipLevels);
+
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
     allocInfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VK_CHECK(vmaCreateImage(allocator, &imageInfo, &allocInfo, &newImage.image,&newImage.allocation,nullptr));
-    printf("made image\n");
+
     VkImageAspectFlags aspectFlag = VK_IMAGE_ASPECT_COLOR_BIT;
     if(format == VK_FORMAT_D32_SFLOAT){
         aspectFlag = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -242,14 +334,14 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkExtent3D size, VkFo
 Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkCommandBuffer commandBuffer,
     void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipMapped){
     size_t dataSize = size.depth*size.width*size.height;
-    Buffer uploadBuffer = createBuffer(allocator, dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    Buffer uploadBuffer = createBuffer(device, allocator, dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VMA_MEMORY_USAGE_CPU_TO_GPU);
 
-    printf("made buffer\n");
+
     memcpy(uploadBuffer.info.pMappedData, data, dataSize);
 
     Image newImage = createImage(allocator, device, size, format, usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mipMapped);
-    printf("made pre image");
+
     VK_CHECK(vkResetCommandBuffer(commandBuffer, 0));
 
     VkCommandBufferBeginInfo cmdBufferBeginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -271,8 +363,79 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkComm
 
 	vkCmdCopyBufferToImage(commandBuffer, uploadBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-	transitionImage(commandBuffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	uint32_t mipLevels = getImageMipLevels(size.width, size.height);; // or however you store it
+    int32_t mipWidth = size.width;
+    int32_t mipHeight = size.height;
 
+    for (uint32_t i = 1; i < mipLevels; i++) {
+        // Transition level i-1: TRANSFER_DST → TRANSFER_SRC
+        VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.image = newImage.image;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 1, 0, 1 };
+
+        VkDependencyInfo depInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        depInfo.imageMemoryBarrierCount = 1;
+        depInfo.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+
+        // Blit from level i-1 to level i
+        VkImageBlit2 blit = { VK_STRUCTURE_TYPE_IMAGE_BLIT_2 };
+        blit.srcOffsets[0] = { 0, 0, 0 };
+        blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
+        blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 };
+        blit.dstOffsets[0] = { 0, 0, 0 };
+        blit.dstOffsets[1] = { std::max(mipWidth / 2, 1), std::max(mipHeight / 2, 1), 1 };
+        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1 };
+
+        VkBlitImageInfo2 blitInfo = { VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2 };
+        blitInfo.srcImage = newImage.image;
+        blitInfo.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        blitInfo.dstImage = newImage.image;
+        blitInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        blitInfo.regionCount = 1;
+        blitInfo.pRegions = &blit;
+        blitInfo.filter = VK_FILTER_LINEAR;
+
+        vkCmdBlitImage2(commandBuffer, &blitInfo);
+
+        mipWidth = std::max(mipWidth / 2, 1);
+        mipHeight = std::max(mipHeight / 2, 1);
+    }
+
+    // Transition all levels to SHADER_READ_ONLY
+    // Levels 0 through mipLevels-2 are in TRANSFER_SRC, last level is in TRANSFER_DST
+    VkImageMemoryBarrier2 finalBarriers[2] = {};
+
+    finalBarriers[0] = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+    finalBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    finalBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    finalBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    finalBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    finalBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    finalBarriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    finalBarriers[0].image = newImage.image;
+    finalBarriers[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels - 1, 0, 1 };
+
+    finalBarriers[1] = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+    finalBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    finalBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    finalBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    finalBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    finalBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    finalBarriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    finalBarriers[1].image = newImage.image;
+    finalBarriers[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevels - 1, 1, 0, 1 };
+
+    VkDependencyInfo finalDep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    finalDep.imageMemoryBarrierCount = (mipLevels > 1) ? 2 : 1;
+    finalDep.pImageMemoryBarriers = (mipLevels > 1) ? finalBarriers : &finalBarriers[1];
+    vkCmdPipelineBarrier2(commandBuffer, &finalDep);
 	VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
     VkCommandBufferSubmitInfo subInfo = createCommandBufferSubmitInfo(commandBuffer);
@@ -280,7 +443,7 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkComm
 
     VK_CHECK(vkQueueSubmit2(queue, 1, &submitInfo, nullptr));
     vkDeviceWaitIdle(device);
-    printf("completed copy");
+
     destroyBuffer(allocator, uploadBuffer);
     return newImage;
 }
@@ -292,7 +455,7 @@ void destroyImage(VkDevice device, VmaAllocator allocator, const Image& img){
 
 uint32_t getImageMipLevels(uint32_t width, uint32_t height){
     uint32_t result = 1;
-    printf("height %d & width %d\n", height, width);
+
     while(width > 1 || height > 1){
         result++;
         width/=2;
