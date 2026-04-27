@@ -32,7 +32,7 @@ struct Material
 	float4 diffuseFactor;
 	float4 specularFactor;
 	float3 emissiveFactor;
-	uint   padding;
+	uint   alphaMode;
 };
 
 struct MeshDraw

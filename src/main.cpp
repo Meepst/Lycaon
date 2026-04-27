@@ -1107,6 +1107,7 @@ int main() {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   features13.dynamicRendering = VK_TRUE;
   features13.synchronization2 = VK_TRUE;
+  features13.shaderDemoteToHelperInvocation = VK_TRUE;
 
   VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtFeatures{
       .sType =
@@ -1613,13 +1614,10 @@ int main() {
 
   printf("size of global: %zu\n",sizeof(globals));
 
-  for (size_t i = 0; i < scene.draws.size(); ++i) {
-      fprintf(stderr, "draw[%zu] mesh=%u mat=%u pos=(%.2f,%.2f,%.2f)\n",
-              i, scene.draws[i].meshIndex, scene.draws[i].materialIndex,
-              scene.draws[i].position.x, scene.draws[i].position.y,
-              scene.draws[i].position.z);
+  for(uint32_t i=0;i<scene.materials.size();i++){
+      const auto& mat = scene.materials[i];
+      printf("Material {%u} alpha mode {%u}\n",i,mat.alphaMode);
   }
-  fflush(stderr);
 
   int frameIndex = 0;
   while (!glfwWindowShouldClose(window)) {

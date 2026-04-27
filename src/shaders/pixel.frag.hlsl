@@ -143,18 +143,19 @@ PixelOutput main(VertexOutput input)
     //     debugOut.color = float4(c, 1.0);
     //     return debugOut;
     // }
-    PixelOutput debugOutput;
-    debugOutput.color = float4( frac(input.materialIndex * 0.1031),
-       frac(input.materialIndex * 0.0973),
-       frac(input.materialIndex * 0.1217),
-       1.0);
-    return debugOutput;
+    // PixelOutput debugOutput;
+    // debugOutput.color = float4( frac(input.materialIndex * 0.1031),
+    //    frac(input.materialIndex * 0.0973),
+    //    frac(input.materialIndex * 0.1217),
+    //    1.0);
+    // return debugOutput;
 
 
     Material mat = Materials[input.materialIndex];
     // debugOutput.color = float4(mat.diffuseFactor.rgb, 1.0);
     // return debugOutput;
     // Base color
+
     float4 baseColor = mat.diffuseFactor;
     if (mat.albedoTexture >= 0)
         baseColor *= Textures[NonUniformResourceIndex(mat.albedoTexture)].Sample(LinearWrap, input.uv);
@@ -211,6 +212,10 @@ PixelOutput main(VertexOutput input)
     //Tonemap (simple Reinhard) + gamma
     color = color / (color + 1.0);
     color = pow(color, 1.0 / 2.2);
+
+    if(mat.alphaMode != 0){
+        discard;
+    }
 
     PixelOutput output;
     output.color = float4(color, baseColor.a);

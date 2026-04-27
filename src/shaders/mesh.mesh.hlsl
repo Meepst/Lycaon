@@ -42,7 +42,7 @@ void main(
         o.worldTangent  = normalize(worldTangent);
         o.bitangentSign = v.bitangentSign;
         o.uv            = v.uv;
-        o.materialIndex = meshletIndex;
+        o.materialIndex = draw.materialIndex;
         outVerts[gtid] = o;
     }
     if (gtid < ml.triangleCount)

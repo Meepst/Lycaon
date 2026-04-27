@@ -601,6 +601,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 	scene.materials[0].diffuseFactor = vec4(1.0f);
 	scene.materials[0].specularFactor = vec4(0.04f, 0.04f, 0.04f, 0.5f);
 	scene.materials[0].emissiveFactor = vec3(0.0f);
+	scene.materials[0].alphaMode = 0;
 
 	for (cgltf_size i = 0; i < data->materials_count; i++) {
 		const auto& src = data->materials[i];
@@ -613,7 +614,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		dst.diffuseFactor   = vec4(1.0f);
 		dst.specularFactor  = vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		dst.emissiveFactor  = vec3(0.0f);
-		dst.padding         = 0;
+		dst.alphaMode         = 0;
 
 		if (src.has_pbr_metallic_roughness) {
 			const auto& pbr = src.pbr_metallic_roughness;
@@ -639,6 +640,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 			src.emissive_factor[0],
 			src.emissive_factor[1],
 			src.emissive_factor[2]);
+		dst.alphaMode = src.alpha_mode;
 	}
 
 	std::vector<PrimitiveJob> jobs;

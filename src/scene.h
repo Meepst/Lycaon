@@ -65,7 +65,7 @@ struct alignas(16) Material{
     vec4 diffuseFactor   = vec4(1.0f);
     vec4 specularFactor  = vec4(0.0f, 0.0f, 0.0f, 1.0f);
     vec3 emissiveFactor  = vec3(0.0f);
-    uint32_t padding     = 0;
+    uint32_t alphaMode     = 0;
 };
 
 struct alignas(16) MeshDraw
