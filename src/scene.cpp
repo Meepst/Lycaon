@@ -9,6 +9,7 @@
 #include <execution>
 #include <limits>
 #include <numeric>
+#include <iostream>
 
 namespace pack {
 
@@ -209,11 +210,20 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 		std::iota(rawIndices.begin(), rawIndices.end(), 0u);
 	}
 
+	std::vector<meshopt_Stream> streams;
+    streams.push_back({ rawPositions.data(), sizeof(float) * 3, sizeof(float) * 3 });
+    if (!rawNormals.empty())
+        streams.push_back({ rawNormals.data(), sizeof(float) * 3, sizeof(float) * 3 });
+    if (!rawUVs.empty())
+        streams.push_back({ rawUVs.data(), sizeof(float) * 2, sizeof(float) * 2 });
+    if (!rawTangents.empty())
+        streams.push_back({ rawTangents.data(), sizeof(float) * 4, sizeof(float) * 4 });
+
 	// meshoptimizer <3
 	std::vector<uint32_t> remap(vertCount);
-	size_t uniqueVerts = meshopt_generateVertexRemap(
+	size_t uniqueVerts = meshopt_generateVertexRemapMulti(
 		remap.data(), rawIndices.data(), rawIndices.size(),
-		rawPositions.data(), vertCount, sizeof(float) * 3);
+		vertCount, streams.data(), streams.size());
 
 	std::vector<uint32_t> optIndices(rawIndices.size());
 	meshopt_remapIndexBuffer(optIndices.data(), rawIndices.data(),
@@ -305,8 +315,8 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 		vtx.np = packNormal1010102(nx, ny, nz, tw);
 		vtx.tp = packTangentOct88(tx, ty, tz);
 
-		vtx.tu = quantizeUV(optUVs[v * 2 + 0]);
-		vtx.tv = quantizeUV(optUVs[v * 2 + 1]);
+		vtx.tu = meshopt_quantizeHalf(optUVs[v * 2 + 0]);
+		vtx.tv = meshopt_quantizeHalf(optUVs[v * 2 + 1]);
 	}
 
 	r.mesh.center       = meshCenter;
@@ -456,9 +466,21 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 		}
 	}
 
+	if (!prim.material) {
+        printf("Primitive with no material! mesh primitive_index=%zu\n",
+            &prim - data->meshes[0].primitives); // or whatever
+	}
+
 	// Material resolution
-	r.materialIndex = (uint32_t)std::max(0,
-		cgltf_util::indexOf(prim.material, data->materials, data->materials_count));
+	// r.materialIndex = (uint32_t)std::max(0,
+	// 	cgltf_util::indexOf(prim.material, data->materials, data->materials_count));
+
+	if(prim.material){
+	    int matid = cgltf_util::indexOf(prim.material, data->materials, data->materials_count);
+		r.materialIndex = (uint32_t)(matid + 1);
+	}else{
+	    r.materialIndex = 0;
+	}
 
 	r.valid = true;
 	return r;
@@ -498,19 +520,49 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		dst.wrapT     = (int)src.wrap_t;
 	}
 
-	// scene.lights.resize(data->lights_count);
+	scene.lights.reserve(data->lights_count);
 
-	// for(cgltf_size i=0;i<data->lights_count;i++){
-	//     auto& src = data->lights[i];
-	// 	auto& dst = scene.lights[i];
+	for(cgltf_size i=0;i<data->nodes_count;i++){
+	    const cgltf_node& node = data->nodes[i];
+		if(!node.light){
+		    continue;
+		}
 
-	// 	dst.color[0] = src.color[0];
-	// 	dst.color[1] = src.color[1];
-	// 	dst.color[2] = src.color[2];
-	// 	dst.intensity = src.intensity;
-	// 	dst.spot_inner_cos = src.spot_inner_cone_angle;
-	// 	dst.spot_outer_cos = src.spot_outer_cone_angle;
-	// }
+		float worldMatrix[16];
+		cgltf_node_transform_world(&node, worldMatrix);
+
+		vec3 position(worldMatrix[12],worldMatrix[13],worldMatrix[14]);
+		vec3 direction = glm::normalize(vec3(-worldMatrix[8],-worldMatrix[9],-worldMatrix[10]));
+
+		Light newLight{};
+		const cgltf_light* light = node.light;
+
+		cgltf_light_type ltype = light->type;
+
+		float innerCone = 1.f;
+        float outerCone = 1.f;
+        float spotCosOuter = 1.f;
+        float spotCosInner = 1.f;
+		if(ltype == cgltf_light_type_spot){
+		    innerCone = light->spot_inner_cone_angle;
+			outerCone = light->spot_outer_cone_angle;
+			spotCosOuter = glm::cos(outerCone);
+			spotCosInner = glm::cos(innerCone);
+		}
+
+		newLight.position = position;
+		newLight.color[0] = light->color[0];
+		newLight.color[1] = light->color[1];
+		newLight.color[2] = light->color[2];
+		newLight.intensity = light->intensity;
+		newLight.range = light->range;
+		newLight.type = ltype;
+		newLight.spotCosOuter = spotCosOuter;
+		newLight.spotCosInner = spotCosInner;
+		newLight.direction = direction;
+
+		scene.lights.push_back(newLight);
+	}
 
 	scene.textures.resize(data->images_count);
 	for (cgltf_size i = 0; i < data->images_count; i++) {
@@ -541,10 +593,18 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		return indexOf(tex.image, data->images, data->images_count);
 	};
 
-	scene.materials.resize(data->materials_count);
+	scene.materials.resize(data->materials_count+1);
+	scene.materials[0].albedoTexture = -1;
+	scene.materials[0].normalTexture = -1;
+	scene.materials[0].specularTexture = -1;
+	scene.materials[0].emissiveTexture = -1;
+	scene.materials[0].diffuseFactor = vec4(1.0f);
+	scene.materials[0].specularFactor = vec4(0.04f, 0.04f, 0.04f, 0.5f);
+	scene.materials[0].emissiveFactor = vec3(0.0f);
+
 	for (cgltf_size i = 0; i < data->materials_count; i++) {
 		const auto& src = data->materials[i];
-		auto& dst       = scene.materials[i];
+		auto& dst       = scene.materials[i+1];
 
 		dst.albedoTexture   = -1;
 		dst.normalTexture   = -1;
@@ -589,6 +649,10 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		jobs.reserve(total);
 
 		for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+            const auto& mesh = data->meshes[mi];
+            if (mesh.name && std::strcmp(mesh.name, "master_material") == 0) {
+                continue;  // skip 3ds Max material-keepalive helper
+            }
 			for (cgltf_size pi = 0; pi < data->meshes[mi].primitives_count; ++pi) {
 				jobs.push_back({mi, pi, jobs.size()});
 			}
@@ -601,6 +665,14 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		[&](const PrimitiveJob& job) {
 			const cgltf_primitive& prim =
 				data->meshes[job.meshIdx].primitives[job.primIdx];
+
+			if (!prim.material) {
+            const char* meshName = data->meshes[job.meshIdx].name
+                ? data->meshes[job.meshIdx].name : "(unnamed)";
+            fprintf(stderr, "NULL MATERIAL: mesh[%zu] '%s' primitive[%zu]\n",
+                    job.meshIdx, meshName, job.primIdx);
+            fflush(stderr);
+        }
 			results[job.resultIdx] = processPrimitive(
 				prim, data,
 				maxVerticesPerMeshlet, maxTrianglesPerMeshlet);
@@ -801,9 +873,16 @@ void printSceneSummary(const Scene& scene)
 		            d.position.x, d.position.y, d.position.z, d.scale);
 	}
 
-	// for(size_t i=0;i<scene.lights.size();i++){
-	//     const auto& l = scene.lights[i];
-	// 	std::printf("   Light[%zu] pos=(%.2f,%.2f,%.2f) intensity=%zu color=(%.2f,%.2f,%.2f) type=%zu inner_cos=%.3f outer_cos=%.3f range=%.3f\n",
-	// 	    i,l.position,l.intensity,l.color,l.type,l.spot_inner_cos,l.spot_outer_cos,l.range);
-	// }
+	for (size_t i = 0; i < scene.lights.size(); i++) {
+    const auto& l = scene.lights[i];
+    std::printf("   Light[%zu] pos=(%.2f,%.2f,%.2f) intensity=%.2f "
+                "color=(%.2f,%.2f,%.2f) type=%d inner_cos=%.2f "
+                "outer_cos=%.2f range=%.2f\n",
+        i,
+        l.position.x, l.position.y, l.position.z,
+        l.intensity,
+        l.color[0], l.color[1], l.color[2],
+        (int)l.type,
+        l.spotCosInner, l.spotCosOuter, l.range);
+	}
 }

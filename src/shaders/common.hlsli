@@ -46,6 +46,26 @@ struct MeshDraw
 	uint   materialIndex;
 };
 
+struct Light{
+    float3 position;
+    uint   type;
+    float3 color;
+    float  intensity;
+    float3 direction;
+    float  spotCosInner;
+    float  spotCosOuter;
+    float  range;
+    float  _pad0;
+    float  _pad1;
+};
+
+struct AliasEntry{
+    float probability;
+    uint alias;
+    float pdf;
+    uint _pad;
+};
+
 struct Globals
 {
 	float4x4 viewProj;
@@ -54,10 +74,8 @@ struct Globals
 	float4x4 invViewProj;
 	float3   cameraPos;
 	float    _pad0;
-	float3   sunDirection;
 	float    _pad1;
-	float3   sunColor;
-	float    sunIntensity;
+	uint     lightCount;
 	float2   screenSize;
 	float    nearPlane;
 	float    farPlane;
@@ -81,6 +99,8 @@ ByteAddressBuffer          MeshletBuffer : register(t3,space0);
 StructuredBuffer<Mesh>     Meshes        : register(t4,space0);
 StructuredBuffer<MeshDraw> Draws         : register(t5,space0);
 StructuredBuffer<Material> Materials     : register(t6,space0);
+StructuredBuffer<Light>    Lights        : register(t7,space0);
+StructuredBuffer<AliasEntry> AliasTable  : register(t8,space0);
 
 Texture2D    Textures[]   : register(t0, space1);
 
@@ -94,12 +114,10 @@ static Globals globals_ = GlobalsBuf[0];
 #define proj         globals_.proj
 #define invViewProj  globals_.invViewProj
 #define cameraPos    globals_.cameraPos
-#define sunDirection globals_.sunDirection
-#define sunColor     globals_.sunColor
-#define sunIntensity globals_.sunIntensity
 #define screenSize   globals_.screenSize
 #define nearPlane    globals_.nearPlane
 #define farPlane     globals_.farPlane
+#define lightCount   globals_.lightCount
 
 float3 rotateByQuat(float3 v, float4 q)
 {
@@ -146,7 +164,7 @@ float3 dequantizePosition(uint3 q, float3 center, float radius)
 
 float2 dequantizeUV(uint2 q)
 {
-	return float2(q) / 65535.0;
+	return float2(f16tof32(q.x), f16tof32(q.y));
 }
 
 struct UnpackedVertex

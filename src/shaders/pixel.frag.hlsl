@@ -5,6 +5,12 @@ struct PixelOutput
 	float4 color : SV_Target0;
 };
 
+struct LightSample{
+    float3 Lo;
+    float3 Li;
+    float distance;
+};
+
 static const float PI     = 3.14159265359;
 static const float INV_PI = 1.0 / PI;
 
@@ -51,14 +57,107 @@ float3 ACESFilm(float3 x)
 	return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
+float pointAttenuation(float dist, float range){
+    float att = 1.f/max(dist*dist,0.0001);
+    if(range>0.0){
+        float window = saturate(1.0-pow(dist/range,4.0));
+        att *= window*window;
+    }
+    return att;
+}
+
+LightSample evaluateLight(Light light, float3 pos){
+    LightSample samp;
+    samp.Lo = float3(0,0,0);
+    samp.Li = float3(0,0,0);
+    samp.distance = 0.0;
+
+    float3 effective = light.color*light.intensity;
+
+    if(light.type == 1){
+        samp.Lo = -normalize(light.direction);
+        samp.distance = 1e30;
+        samp.Li = effective;
+    }else if(light.type == 2){
+        float3 toLight = light.position - pos;
+        samp.distance = length(toLight);
+        samp.Lo = toLight/max(samp.distance,0.0001);
+        float att = pointAttenuation(samp.distance,light.range);
+        samp.Li = effective*att;
+    }else if(light.type == 3){
+        float3 toLight = light.position - pos;
+        samp.distance = length(toLight);
+        samp.Lo = toLight/max(samp.distance,0.0001);
+        float distAtt = pointAttenuation(samp.distance,light.range);
+        float cosTheta = dot(-samp.Lo,light.direction);
+        float coneAtt = smoothstep(light.spotCosOuter,light.spotCosInner,cosTheta);
+        samp.Li = effective*distAtt*coneAtt;
+    }
+
+    return samp;
+}
+
+float3 evaluateBRDF(float3 N, float3 V, float3 L, float3 baseColor,
+                    float metallic, float roughness)
+{
+    float3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+
+    if (NdotL <= 0.0) return float3(0, 0, 0);
+
+    float3 F0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metallic);
+    float3 F = F_Schlick(VdotH, F0);
+    float  D = D_GGX(NdotH, roughness);
+    float  G = G_SmithGGX(NdotV, NdotL, roughness);
+
+    float3 specular = (D * F * G) / max(4.0 * NdotV * NdotL, 0.001);
+    float3 kD = (1.0 - F) * (1.0 - metallic);
+    float3 diffuse = kD * baseColor * INV_PI;
+
+    return (diffuse + specular) * NdotL;
+}
+
 PixelOutput main(VertexOutput input)
 {
-    Material mat = Materials[input.materialIndex];
 
+    // // Visualization: distance to nearest point light
+    // float minDist = 1e30;
+    // uint  closestIdx = 0;
+    // [loop]
+    // for (uint i = 0; i < lightCount; ++i)
+    // {
+    //     if (Lights[i].type == 1) continue;
+    //     float d = distance(Lights[i].position, input.worldPos);
+    //     if (d < minDist) { minDist = d; closestIdx = i; }
+    // }
+
+    // // If pixel is within 0.3 units of a light, color by light index
+    // if (minDist < 0.3)
+    // {
+    //     float h = float(closestIdx) / float(lightCount);
+    //     float3 c = float3(frac(h * 7.13), frac(h * 3.31), frac(h * 5.71));
+    //     PixelOutput debugOut;
+    //     debugOut.color = float4(c, 1.0);
+    //     return debugOut;
+    // }
+    PixelOutput debugOutput;
+    debugOutput.color = float4( frac(input.materialIndex * 0.1031),
+       frac(input.materialIndex * 0.0973),
+       frac(input.materialIndex * 0.1217),
+       1.0);
+    return debugOutput;
+
+
+    Material mat = Materials[input.materialIndex];
+    // debugOutput.color = float4(mat.diffuseFactor.rgb, 1.0);
+    // return debugOutput;
     // Base color
     float4 baseColor = mat.diffuseFactor;
     if (mat.albedoTexture >= 0)
-        baseColor *= Textures[mat.albedoTexture].Sample(LinearWrap, input.uv);
+        baseColor *= Textures[NonUniformResourceIndex(mat.albedoTexture)].Sample(LinearWrap, input.uv);
 
     // Normal mapping
     float3 N = normalize(input.worldNormal);
@@ -68,7 +167,7 @@ PixelOutput main(VertexOutput input)
         float3 B = cross(N, T) * input.bitangentSign;
         float3x3 TBN = float3x3(T, B, N);
 
-        float3 normalSample = Textures[mat.normalTexture].Sample(LinearWrap, input.uv).xyz;
+        float3 normalSample = Textures[NonUniformResourceIndex(mat.normalTexture)].Sample(LinearWrap, input.uv).xyz;
         normalSample = normalSample * 2.0 - 1.0;
         N = normalize(mul(normalSample, TBN));
     }
@@ -80,54 +179,30 @@ PixelOutput main(VertexOutput input)
 
     if (mat.specularTexture >= 0)
     {
-        float4 mrSample = Textures[mat.specularTexture].Sample(LinearWrap, input.uv);
+        float4 mrSample = Textures[NonUniformResourceIndex(mat.specularTexture)].Sample(LinearWrap, input.uv);
         roughness *= mrSample.g;  // glTF: green = roughness
         metallic  *= mrSample.b;  // glTF: blue = metallic
     }
 
     // Lighting vectors
     float3 V = normalize(cameraPos - input.worldPos);
-    float3 L = sunDirection;
-    float3 H = normalize(V + L);
+    float3 color = float3(0,0,0);
 
-    float NdotL = max(dot(N, L), 0.0);
-    float NdotV = max(dot(N, V), 0.001);
-    float NdotH = max(dot(N, H), 0.0);
-    float VdotH = max(dot(V, H), 0.0);
+    [loop]
+    for(uint i=0;i<lightCount;i++){
+        Light light = Lights[i];
+        LightSample samp = evaluateLight(light,input.worldPos);
+        if(light.type == 1) continue;
+        if(all(samp.Li==0.0)) continue;
 
-    // PBR (Cook-Torrance)
-    // F0: dielectric = 0.04, metallic = base color
-    float3 F0 = lerp(float3(0.04, 0.04, 0.04), baseColor.rgb, metallic);
-
-    // Fresnel (Schlick)
-    float3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
-
-    // Distribution (GGX)
-    float a  = roughness * roughness;
-    float a2 = a * a;
-    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
-    float D = a2 / (3.14159265 * denom * denom);
-
-    // Geometry (Smith GGX)
-    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-    float G1V = NdotV / (NdotV * (1.0 - k) + k);
-    float G1L = NdotL / (NdotL * (1.0 - k) + k);
-    float G = G1V * G1L;
-
-    // Specular BRDF
-    float3 specular = (D * F * G) / (4.0 * NdotV * NdotL + 0.001);
-
-    // Diffuse (Lambert, energy-conserving)
-    float3 kD = (1.0 - F) * (1.0 - metallic);
-    float3 diffuse = kD * baseColor.rgb / 3.14159265;
-
-    // Combine
-    float3 color = (diffuse + specular) * sunColor * sunIntensity * NdotL;
+        float3 brdf = evaluateBRDF(N,V,samp.Lo,baseColor.rgb,metallic,roughness);
+        color += brdf*samp.Li;
+    }
 
     // Emissive
     float3 emissive = mat.emissiveFactor;
     if (mat.emissiveTexture >= 0)
-        emissive *= Textures[mat.emissiveTexture].Sample(LinearWrap, input.uv).rgb;
+        emissive *= Textures[NonUniformResourceIndex(mat.emissiveTexture)].Sample(LinearWrap, input.uv).rgb;
     color += emissive;
 
     // Ambient (minimal, so things aren't pure black in shadow)

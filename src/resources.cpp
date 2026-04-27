@@ -308,6 +308,7 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkExtent3D size, VkFo
     newImage.imageExtent = size;
 
     VkImageCreateInfo imageInfo = createImageCreateInfo(format, usage, size);
+
     if(mipMapped){
         imageInfo.mipLevels = getImageMipLevels(size.width, size.height);
         newImage.mipLevels = imageInfo.mipLevels;
@@ -363,7 +364,8 @@ Image createImage(VmaAllocator allocator, VkDevice device, VkQueue queue, VkComm
 
 	vkCmdCopyBufferToImage(commandBuffer, uploadBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-	uint32_t mipLevels = getImageMipLevels(size.width, size.height);; // or however you store it
+	uint32_t mipLevels = getImageMipLevels(size.width, size.height);
+	mipLevels = 1;
     int32_t mipWidth = size.width;
     int32_t mipHeight = size.height;
 

@@ -104,16 +104,19 @@ struct Geometry
 	std::vector<uint32_t> meshletData; // vertex indices + packed triangle indices
 };
 
-// struct Light{
-//     float position[3] = {0,0,0};
-//     float range = 0;
-//     float direction[3] = {0,0,0};
-//     float intensity = 0;
-//     float color[3] = {0,0,0};
-//     uint32_t type = 0;
-//     float spot_inner_cos = 0;
-//     float spot_outer_cos = 0;
-// };
+
+struct Light{
+    vec3 position;
+    uint32_t  type;
+    vec3  color;
+    float intensity;
+    vec3 direction;
+    float  spotCosInner;
+    float   spotCosOuter;
+    float   range;
+    float   _pad0;
+    float   _pad1;
+};
 
 struct Scene
 {
@@ -123,7 +126,7 @@ struct Scene
 	std::vector<MeshDraw>    draws;
 	std::vector<TextureInfo> textures;
 	std::vector<SamplerInfo> samplers;
-	//std::vector<Light>       lights;
+	std::vector<Light>       lights;
 };
 
 

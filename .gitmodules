@@ -16,3 +16,12 @@
 [submodule "dependencies/glm"]
 	path = dependencies/glm
 	url = git@github.com:icaven/glm.git
+[submodule "dependencies/SPIRV-Reflect"]
+	path = dependencies/SPIRV-Reflect
+	url = git@github.com:KhronosGroup/SPIRV-Reflect.git
+[submodule "dependencies/meshoptimizer"]
+	path = dependencies/meshoptimizer
+	url = git@github.com:zeux/meshoptimizer.git
+[submodule "dependencies/KTX-Software"]
+	path = dependencies/KTX-Software
+	url = git@github.com:KhronosGroup/KTX-Software.git

@@ -40,6 +40,12 @@ target_link_libraries(Lycaon PRIVATE volk_headers)
 add_subdirectory(dependencies/meshoptimizer)
 target_link_libraries(Lycaon PRIVATE meshoptimizer)
 
+set(KTX_FEATURE_TESTS      OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TOOLS      OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_STATIC_LIB OFF  CACHE BOOL "" FORCE)
+set(KTX_FEATURE_VK_UPLOAD  ON  CACHE BOOL "" FORCE)
+add_subdirectory(dependencies/KTX-Software)
+target_link_libraries(Lycaon PRIVATE ktx)
 
 set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -60,6 +66,11 @@ endif()
 
 target_include_directories(Lycaon PRIVATE include dependencies/SPIRV-Headers)
 
+
+add_custom_command(TARGET Lycaon POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy -t $<TARGET_FILE_DIR:Lycaon>
+        $<TARGET_RUNTIME_DLLS:Lycaon>
+    COMMAND_EXPAND_LISTS)
 
 find_program(DXC dxc
     HINTS "$ENV{VULKAN_SDK}/Bin"

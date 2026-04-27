@@ -11,8 +11,10 @@
 #include <execution>
 #include <stb_image.h>
 #include "spirv_reflect.h"
+#include "texture.h"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/string_cast.hpp>
+
 
 struct FrameDescriptors {
   VkDevice device;
@@ -30,15 +32,15 @@ struct alignas(16) TaskConstants
 	uint32_t _pad;
 };
 
-struct PushConstants{
-    uint32_t globals;
-    uint32_t vertexBuffer;
-    uint32_t meshletData;
-    uint32_t meshletBuffer;
-    uint32_t meshes;
-    uint32_t draws;
-    uint32_t materials;
-};
+// struct PushConstants{
+//     uint32_t globals;
+//     uint32_t vertexBuffer;
+//     uint32_t meshletData;
+//     uint32_t meshletBuffer;
+//     uint32_t meshes;
+//     uint32_t draws;
+//     uint32_t materials;
+// };
 
 struct alignas(64) Globals{
     glm::mat4 viewProj;
@@ -47,10 +49,8 @@ struct alignas(64) Globals{
     glm::mat4 invViewProj;
     glm::vec3 cameraPos;
     float     _pad0;
-    glm::vec3 sunDirection;
     float     _pad1;
-    glm::vec3 sunColor;
-    float     sunIntensity;
+    uint32_t lightCount;
     glm::vec2 screenSize;
     float     nearPlane;
     float     farPlane;
@@ -435,7 +435,9 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineCache pipelineCache
 
 	VkDynamicState dynamicStates[] = {
 		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_DEPTH_BIAS
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_DEPTH_BIAS,VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
 	};
 
 	VkPipelineDynamicStateCreateInfo dynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
@@ -595,7 +597,7 @@ struct UploadEntry{
 };
 
 void batchUpload(VkDevice device, VmaAllocator allocator,
-    VkCommandBuffer commandBuffer, VkQueue queue, std::array<UploadEntry, 8> uploads){
+    VkCommandBuffer commandBuffer, VkQueue queue, std::array<UploadEntry, 10> uploads){
     VkDeviceSize totalSize = 0;
     for(auto& upload : uploads){
         totalSize += upload.size;
@@ -955,6 +957,97 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineCache pipelineCache,
 	return pipeline;
 }
 
+struct AliasEntry{
+    float probability;
+    uint32_t alias;
+    float pdf;
+    uint32_t _pad;
+};
+
+float computePower(const Light& light){
+    vec3 effective = vec3(light.color[0]*light.intensity,light.color[1]*light.intensity,
+        light.color[2]*light.intensity);
+    float lum = 0.2126f*effective.x+0.7152f*effective.y+0.0722f*effective.z;
+
+    float pi = glm::pi<float>();
+
+    switch(light.type){
+        case cgltf_light_type_point:
+            return 4.f*pi*lum;
+        case cgltf_light_type_spot:
+            return 2.f*pi*(1.f-light.spotCosOuter)*lum;
+        case cgltf_light_type_directional:
+            return lum*10.f;
+        default:
+            return 0.f;
+    }
+}
+
+void buildAliasTable(const std::vector<float>& weights,std::vector<AliasEntry>& out){
+    size_t n = weights.size();
+    if(n==0){
+        out.clear();
+        return;
+    }
+
+    float sum = 0.f;
+    for(float w : weights){
+        sum += w;
+    }
+
+    std::vector<float> probs(n);
+    for(size_t i=0;i<n;i++){
+        probs[i] = (weights[i]*n)/sum;
+    }
+
+    std::vector<size_t> small;
+    std::vector<size_t> large;
+    small.reserve(n);
+    large.reserve(n);
+    for(size_t i=0;i<n;i++){
+        (probs[i]<1.f ? small : large).push_back(i);
+    }
+
+    out.resize(n);
+    for(size_t i=0;i<n;i++){
+        out[i].pdf = weights[i]/sum;
+    }
+
+    while(!small.empty()&&!large.empty()){
+        size_t s = small.back();
+        small.pop_back();
+        size_t l = large.back();
+        large.pop_back();
+
+        out[s].probability = probs[s];
+        out[s].alias = (uint32_t)l;
+
+        probs[l] = (probs[l]+probs[s])-1.f;
+
+        if(probs[l]<1.f){
+            small.push_back(l);
+        }else{
+            large.push_back(l);
+        }
+    }
+
+    while(!large.empty()){
+        size_t l = large.back();
+        large.pop_back();
+
+        out[l].probability = 1.f;
+        out[l].alias = (uint32_t)l;
+    }
+
+    while(!small.empty()){
+        size_t s = small.back();
+        small.pop_back();
+
+        out[s].probability = 1.f;
+        out[s].alias = (uint32_t)s;
+    }
+}
+
 int main() {
   glfwInit();
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -1009,6 +1102,7 @@ int main() {
   features12.descriptorIndexing = VK_TRUE;
   features12.runtimeDescriptorArray = VK_TRUE;
   features12.samplerFilterMinmax = VK_TRUE;
+  features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
   VkPhysicalDeviceVulkan13Features features13{
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   features13.dynamicRendering = VK_TRUE;
@@ -1164,7 +1258,7 @@ int main() {
 
   getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
 		static_cast<char*>(samplerHeap.info.pMappedData) + 0 * samplerDescriptorSize, descProps.samplerDescriptorSize);
-  getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
+  getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
 		static_cast<char*>(samplerHeap.info.pMappedData) + 1 * samplerDescriptorSize, descProps.samplerDescriptorSize);
 
 
@@ -1261,63 +1355,131 @@ int main() {
   sceneExe = (dotPos == std::string::npos) ? "" : sceneExe.substr(dotPos + 1);
   printf("exe: %s\n",sceneExe.c_str());
 
-  printSceneSummary(scene);
+  //printSceneSummary(scene);
+  //
+  // for(size_t i=0;i<scene.geometry.vertices.size();i++){
+  //     const Vertex& vert = scene.geometry.vertices[i];
+  //     std::cout << "Vert: " << i << " tu: " << vert.tu<< " tv: " << vert.tv<<std::endl;
+  // }
 
-  std::vector<DecodedImage> decodedImages(scene.textures.size());
+  // std::vector<int> hist(scene.materials.size(), 0);
+  //    for (const auto& d : scene.draws) hist[d.materialIndex]++;
+  //    for (size_t i = 0; i < hist.size(); ++i)
+  //        fprintf(stderr, "materialIndex %zu: %d draws\n", i, hist[i]);
+  //    fflush(stderr);
+  uint8_t maxV = 0, maxT = 0;
+  for(auto& ml : scene.geometry.meshlets){
+      maxV = std::max(maxV,ml.vertexCount);
+      maxT = std::max(maxT,ml.triangleCount);
+  }
+  printf("max vertices: %u, max triangles: %u\n", maxV, maxT);
+  assert(maxV <= 64);
+  assert(maxT <= 124);
+
+
+
+  std::vector<float> weights(scene.lights.size());
+  for(size_t i=0;i<scene.lights.size();i++){
+      weights[i] = computePower(scene.lights[i]);
+  }
+
+  std::vector<AliasEntry> aliasTable;
+  buildAliasTable(weights, aliasTable);
+
+  //std::vector<DecodedImage> decodedImages(scene.textures.size());
   std::vector<size_t> imageJobs(scene.textures.size());
   std::iota(imageJobs.begin(),imageJobs.end(),0);
+  std::vector<ktxTexture2*> ktxTextures(scene.textures.size(), nullptr);
 
   const bool fromFile = (sceneExe == "gltf");
 
+  double beginImageTime = glfwGetTime();
+
   std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
       [&](size_t i){
-          const auto& tex = scene.textures[i];
-          DecodedImage& di = decodedImages[i];
-
-          int channels = 0;
-          if(fromFile){
-              std::string texName = sceneDir+tex.uri;
-              di.label = texName;
-              di.pixels = stbi_load(texName.c_str(),
-                    &di.width, &di.height, &channels, STBI_rgb_alpha);
-          }else{
-              di.label = tex.name;
-              di.pixels = stbi_load_from_memory(tex.data.data(), (int)tex.data.size(),
-                    &di.width, &di.height, &channels, STBI_rgb_alpha);
-          }
-          di.ok = (di.pixels != nullptr);
+          auto& texture = scene.textures[i];
+          std::string texName = sceneDir+texture.uri;
+          KTX_error_code ktxRes = ktxTexture2_CreateFromNamedFile(
+              texName.c_str(),KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+              &ktxTextures[i]
+          );
+          //printf("file name: %s and result %d\n",texName.c_str(),ktxRes);
+          assert(ktxRes == KTX_SUCCESS);
       });
 
   std::vector<Image> images;
-  images.reserve(decodedImages.size());
+  images.reserve(ktxTextures.size());
   size_t imageMemory = 0;
 
-  for(size_t i=0;i<decodedImages.size();i++){
-      DecodedImage& di = decodedImages[i];
-      if(!di.ok){
-          printf("Failed to load image %s\n", di.label.c_str());
-          continue;
-      }
+  for(uint32_t i=0;i<ktxTextures.size();i++){
+      assert(ktxTextures[i] != nullptr);
 
-      VkExtent3D size = { uint32_t(di.width), uint32_t(di.height), 4 };
-      Image image = createImage(m_vmaAllocator, m_device, graphicsQueue, initCommandBuffer,
-              di.pixels, size, VK_FORMAT_R8G8B8A8_SRGB,
-              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, true);
+      Image img = createKTXImage(m_vmaAllocator,m_device,graphicsQueue,
+          initCommandBuffer,ktxTextures[i],VK_IMAGE_USAGE_TRANSFER_DST_BIT
+          | VK_IMAGE_USAGE_SAMPLED_BIT);
 
       VkMemoryRequirements memoryRequirements{};
-      vkGetImageMemoryRequirements(m_device, image.image, &memoryRequirements);
+      vkGetImageMemoryRequirements(m_device, img.image, &memoryRequirements);
       imageMemory += memoryRequirements.size;
 
-      images.push_back(image);
-      stbi_image_free(di.pixels);
-      di.pixels = nullptr;
+      images.push_back(img);
   }
 
-  for(auto& di : decodedImages){
-      if(di.pixels){
-          stbi_image_free(di.pixels);
+  for(auto& kt : ktxTextures){
+      if(kt){
+          ktxTexture_Destroy(ktxTexture(kt));
       }
   }
+
+  // std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
+  //     [&](size_t i){
+  //         const auto& tex = scene.textures[i];
+  //         DecodedImage& di = decodedImages[i];
+
+  //         int channels = 0;
+  //         if(fromFile){
+  //             std::string texName = sceneDir+tex.uri;
+  //             di.label = texName;
+  //             di.pixels = stbi_load(texName.c_str(),
+  //                   &di.width, &di.height, &channels, STBI_rgb_alpha);
+  //         }else{
+  //             di.label = tex.name;
+  //             di.pixels = stbi_load_from_memory(tex.data.data(), (int)tex.data.size(),
+  //                   &di.width, &di.height, &channels, STBI_rgb_alpha);
+  //         }
+  //         di.ok = (di.pixels != nullptr);
+  //     });
+
+  // std::vector<Image> images;
+  // images.reserve(decodedImages.size());
+  // size_t imageMemory = 0;
+
+  // for(size_t i=0;i<decodedImages.size();i++){
+  //     DecodedImage& di = decodedImages[i];
+  //     if(!di.ok){
+  //         printf("Failed to load image %s\n", di.label.c_str());
+  //         continue;
+  //     }
+  //     printf("Texture: %s\n",scene.textures[i].name.c_str());
+  //     VkExtent3D size = { uint32_t(di.width), uint32_t(di.height), 4 };
+  //     Image image = createImage(m_vmaAllocator, m_device, graphicsQueue, initCommandBuffer,
+  //             di.pixels, size, VK_FORMAT_BC7_SRGB_BLOCK,
+  //             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, false);
+
+  //     VkMemoryRequirements memoryRequirements{};
+  //     vkGetImageMemoryRequirements(m_device, image.image, &memoryRequirements);
+  //     imageMemory += memoryRequirements.size;
+
+  //     images.push_back(image);
+  //     stbi_image_free(di.pixels);
+  //     di.pixels = nullptr;
+  // }
+
+  // for(auto& di : decodedImages){
+  //     if(di.pixels){
+  //         stbi_image_free(di.pixels);
+  //     }
+  // }
 
   deletionQueue.push_back([&](){
       for(Image& image : images){
@@ -1334,7 +1496,7 @@ int main() {
       }
   }
 
-  printf("Loaded %d textures (%.2f MB) in %.2f sec\n", int(images.size()), double(imageMemory) / 1e6);
+  printf("Loaded %d textures (%.2f MB) in %.2f sec\n", int(images.size()), double(imageMemory) / 1e6,glfwGetTime()-beginImageTime);
 
   for(size_t i=0;i<scene.textures.size();i++){
       void* dst = static_cast<char*>(resourceHeap.info.pMappedData)
@@ -1374,9 +1536,7 @@ int main() {
   globals.cameraPos   = eye;
 
   // Late afternoon sun
-  globals.sunDirection = glm::normalize(glm::vec3(0.5f, 0.7f, 0.3f));
-  globals.sunColor     = {1.0f, 0.95f, 0.85f};  // warm white
-  globals.sunIntensity = 3.0f;
+  globals.lightCount = scene.lights.size();
 
   globals.screenSize = {swapchain.width, swapchain.height};
   globals.nearPlane  = nearZ;
@@ -1399,6 +1559,10 @@ int main() {
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   Buffer meshletBuffer = createBuffer(m_device,m_vmaAllocator,scene.geometry.meshlets.size()*sizeof(Meshlet),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+  Buffer lightBuffer = createBuffer(m_device,m_vmaAllocator,scene.lights.size()*sizeof(Light),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+  Buffer aliasTableBuffer = createBuffer(m_device,m_vmaAllocator,aliasTable.size()*sizeof(AliasEntry),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
   setDebugName(m_device, (uint64_t)meshBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"meshBuffer");
   setDebugName(m_device, (uint64_t)matBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"matBuffer");
@@ -1408,6 +1572,8 @@ int main() {
   setDebugName(m_device, (uint64_t)meshletBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"meshletBuffer");
   setDebugName(m_device, (uint64_t)vertBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"vertBuffer");
   setDebugName(m_device, (uint64_t)indexBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"indexBuffer");
+  setDebugName(m_device, (uint64_t)lightBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"lightBuffer");
+  setDebugName(m_device, (uint64_t)aliasTableBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"aliasTableBuffer");
 
 
   deletionQueue.push_back([&](){
@@ -1419,9 +1585,11 @@ int main() {
       destroyBuffer(m_vmaAllocator, globalBuffer);
       destroyBuffer(m_vmaAllocator, meshletBuffer);
       destroyBuffer(m_vmaAllocator, meshletDataBuffer);
+      destroyBuffer(m_vmaAllocator, lightBuffer);
+      destroyBuffer(m_vmaAllocator, aliasTableBuffer);
   });
 
-  std::array<UploadEntry, 8> uploads = {{
+  std::array<UploadEntry, 10> uploads = {{
       { meshBuffer.buffer,       scene.meshes.data(),              scene.meshes.size() * sizeof(Mesh) },
       { matBuffer.buffer,        scene.materials.data(),           scene.materials.size() * sizeof(Material) },
       { vertBuffer.buffer,       scene.geometry.vertices.data(),   scene.geometry.vertices.size() * sizeof(Vertex) },
@@ -1430,6 +1598,8 @@ int main() {
       { globalBuffer.buffer,     &globals,                         sizeof(globals) },
       { meshletDataBuffer.buffer,scene.geometry.meshletData.data(),scene.geometry.meshletData.size() * sizeof(uint32_t) },
       { meshletBuffer.buffer,    scene.geometry.meshlets.data(),   scene.geometry.meshlets.size() * sizeof(Meshlet) },
+      { lightBuffer.buffer,    scene.lights.data(),   scene.lights.size() * sizeof(Light) },
+      { aliasTableBuffer.buffer,    aliasTable.data(),   aliasTable.size() * sizeof(AliasEntry) },
   }};
 
   batchUpload(m_device, m_vmaAllocator,initCommandBuffer,
@@ -1439,11 +1609,17 @@ int main() {
   Image gbufferTargets[gbufferCount] = {};
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
 
-  bool newCamera = false;
-
   double elapsedTime = glfwGetTime();
 
   printf("size of global: %zu\n",sizeof(globals));
+
+  for (size_t i = 0; i < scene.draws.size(); ++i) {
+      fprintf(stderr, "draw[%zu] mesh=%u mat=%u pos=(%.2f,%.2f,%.2f)\n",
+              i, scene.draws[i].meshIndex, scene.draws[i].materialIndex,
+              scene.draws[i].position.x, scene.draws[i].position.y,
+              scene.draws[i].position.z);
+  }
+  fflush(stderr);
 
   int frameIndex = 0;
   while (!glfwWindowShouldClose(window)) {
@@ -1509,8 +1685,6 @@ int main() {
           VK_CHECK(vkCreateImageView(m_device,&ivinfo,nullptr,&swapchain.imageViews[i]));
       }
 
-
-      newCamera = true;
     }
 
     VkResult fenceResult = vkWaitForFences(m_device, 1, &renderFences[frameIndex], VK_TRUE,
@@ -1648,7 +1822,7 @@ int main() {
 
 	VkRenderingAttachmentInfo depthAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
 	depthAttachment.imageView = depthTarget.imageView;
-	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	depthAttachment.clearValue.depthStencil = depthClear;
@@ -1693,7 +1867,7 @@ int main() {
 		push.meshletCount = lod.meshletCount;
 
 		DescriptorInfo descriptors[] = {globalBuffer,vertBuffer,meshletDataBuffer
-		,meshletBuffer,meshBuffer,drawBuffer,matBuffer};
+		,meshletBuffer,meshBuffer,drawBuffer,matBuffer,lightBuffer,aliasTableBuffer};
 
 		pushDescriptorsAndConstants(commandBuffer, frameDesc, graphicsProgram,
                             descriptors, push);
