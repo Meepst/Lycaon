@@ -423,10 +423,12 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineCache pipelineCache
 
 	VkPipelineColorBlendAttachmentState colorAttachmentStates[8] = {};
 	assert(renderingInfo.colorAttachmentCount <= 8);
-	for (uint32_t i = 0; i < renderingInfo.colorAttachmentCount; ++i)
-		colorAttachmentStates[i].colorWriteMask =
+	for (uint32_t i = 0; i < renderingInfo.colorAttachmentCount; ++i){
+	    colorAttachmentStates[i].colorWriteMask =
 		    VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
 		    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorAttachmentStates[i].blendEnable = VK_FALSE;
+	}
 
 	VkPipelineColorBlendStateCreateInfo colorBlendState = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 	colorBlendState.attachmentCount = renderingInfo.colorAttachmentCount;
@@ -1157,7 +1159,7 @@ int main() {
               VK_EXT_MESH_SHADER_EXTENSION_NAME,
               VK_KHR_MAINTENANCE_5_EXTENSION_NAME,
           })
-          .add_required_extension_features(rtFeatures)
+          .add_required_extension_features(accelFeatures)
           .add_required_extension_features(heapFeatures)
           .add_required_extension_features(meshFeatures)
           .add_required_extension_features(maint5)
@@ -1238,6 +1240,9 @@ int main() {
   VkPhysicalDeviceDescriptorHeapPropertiesEXT descProps{
       .sType =
           VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps{};
+  asProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+  descProps.pNext = &asProps;
   props2.pNext = &descProps;
   vkGetPhysicalDeviceProperties2(m_physicalDevice, &props2);
 
@@ -1287,10 +1292,12 @@ int main() {
 
   VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
 
-  static const size_t gbufferCount = 2;
+  static const size_t gbufferCount = 4;
   const VkFormat gbufferFormats[gbufferCount] = {
       VK_FORMAT_R8G8B8A8_UNORM,
-      VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+      VK_FORMAT_R16G16B16A16_SFLOAT,
+      VK_FORMAT_R8G8B8A8_UNORM,
+      VK_FORMAT_R16G16B16A16_SFLOAT,
   };
 
   SpvReflectShaderModule taskModule;
@@ -1576,6 +1583,43 @@ int main() {
   setDebugName(m_device, (uint64_t)lightBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"lightBuffer");
   setDebugName(m_device, (uint64_t)aliasTableBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"aliasTableBuffer");
 
+  std::vector<VkAccelerationStructureKHR> blas;
+  std::vector<VkDeviceAddress> blasAddresses;
+  VkAccelerationStructureKHR tlas = nullptr;
+  bool tlasNeedsRebuild = true;
+  Buffer blasBuffer = {};
+  Buffer tlasBuffer = {};
+  Buffer tlasStagingBuffer = {};
+  Buffer tlasInstanceBuffer = {};
+
+  std::vector<VkDeviceSize> compactedSizes;
+  buildBLAS(m_device,m_vmaAllocator,scene.meshes,vertBuffer,indexBuffer,
+      blas,compactedSizes,blasBuffer,initCommandPool,initCommandBuffer,graphicsQueue,asProps);
+  compactBLAS(m_device,m_vmaAllocator,blas,compactedSizes,blasBuffer,initCommandPool,
+      initCommandBuffer,graphicsQueue);
+
+  blasAddresses.resize(blas.size());
+
+  for(size_t i=0;i<blas.size();i++){
+    VkAccelerationStructureDeviceAddressInfoKHR info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    info.accelerationStructure = blas[i];
+    blasAddresses[i] = vkGetAccelerationStructureDeviceAddressKHR(m_device, &info);
+  }
+
+  tlasInstanceBuffer = createBuffer(m_device,m_vmaAllocator,sizeof(VkAccelerationStructureInstanceKHR)*scene.draws.size(),
+      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,VMA_MEMORY_USAGE_AUTO);
+
+  for(size_t i=0;i<scene.draws.size();i++){
+      const MeshDraw& draw = scene.draws[i];
+      assert(draw.meshIndex < blas.size());
+
+      VkAccelerationStructureInstanceKHR instance = {};
+      fillInstanceRT(instance, draw, uint32_t(i), blasAddresses[draw.meshIndex]);
+
+      memcpy(static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer.info.pMappedData) + i, &instance, sizeof(VkAccelerationStructureInstanceKHR));
+  }
+
+  tlas = createTLAS(m_device,m_vmaAllocator,tlasStagingBuffer,tlasInstanceBuffer,scene.draws.size(),tlasBuffer,asProps);
 
   deletionQueue.push_back([&](){
       destroyBuffer(m_vmaAllocator, meshBuffer);
@@ -1588,6 +1632,14 @@ int main() {
       destroyBuffer(m_vmaAllocator, meshletDataBuffer);
       destroyBuffer(m_vmaAllocator, lightBuffer);
       destroyBuffer(m_vmaAllocator, aliasTableBuffer);
+      destroyBuffer(m_vmaAllocator, tlasBuffer);
+      destroyBuffer(m_vmaAllocator, blasBuffer);
+      destroyBuffer(m_vmaAllocator, tlasStagingBuffer);
+      destroyBuffer(m_vmaAllocator, tlasInstanceBuffer);
+      vkDestroyAccelerationStructureKHR(m_device,tlas,0);
+      for(VkAccelerationStructureKHR as : blas){
+          vkDestroyAccelerationStructureKHR(m_device,as,0);
+      }
   });
 
   std::array<UploadEntry, 10> uploads = {{
@@ -1614,10 +1666,13 @@ int main() {
 
   printf("size of global: %zu\n",sizeof(globals));
 
-  for(uint32_t i=0;i<scene.materials.size();i++){
-      const auto& mat = scene.materials[i];
-      printf("Material {%u} alpha mode {%u}\n",i,mat.alphaMode);
+  for (size_t i = 0; i < scene.draws.size(); ++i) {
+      fprintf(stderr, "draw[%zu] mesh=%u mat=%u pos=(%.2f,%.2f,%.2f)\n",
+              i, scene.draws[i].meshIndex, scene.draws[i].materialIndex,
+              scene.draws[i].position.x, scene.draws[i].position.y,
+              scene.draws[i].position.z);
   }
+  fflush(stderr);
 
   int frameIndex = 0;
   while (!glfwWindowShouldClose(window)) {
@@ -1795,8 +1850,12 @@ int main() {
 
 	// batchBarrier(commandBuffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
  //        {gbufferTargets[0].image,gbufferTargets[1].image},{depthTarget.image});
-    transitionImage(commandBuffer,depthTarget.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    transitionImage(commandBuffer,depthTarget.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 	transitionImage(commandBuffer, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	// transitionImage(commandBuffer, gbufferTargets[0].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	// transitionImage(commandBuffer, gbufferTargets[1].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	// transitionImage(commandBuffer, gbufferTargets[2].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	// transitionImage(commandBuffer, gbufferTargets[3].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	VkClearColorValue colorClear = { 135.f / 255.f, 206.f / 255.f, 250.f / 255.f, 15.f / 255.f };
 	VkClearDepthStencilValue depthClear = { 0.f, 0 };
@@ -1817,6 +1876,16 @@ int main() {
     colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = colorClear;
+
+  //   VkRenderingAttachmentInfo gbufferAttachments[gbufferCount] = {};
+  //   for(uint32_t i=0;i<gbufferCount;i++){
+  //      	gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+		// gbufferAttachments[i].imageView = gbufferTargets[i].imageView;
+		// gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		// gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		// gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		// gbufferAttachments[i].clearValue.color = colorClear;
+  //   }
 
 	VkRenderingAttachmentInfo depthAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
 	depthAttachment.imageView = depthTarget.imageView;

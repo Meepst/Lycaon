@@ -137,6 +137,14 @@ float3 octDecode(float2 e)
 	return normalize(v);
 }
 
+float2 octEncode(float3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    float2 oct = n.z >= 0.0 ? n.xy
+                            : (1.0 - abs(n.yx)) * select(n.xy >= 0.0, 1.0, -1.0);
+    return oct * 0.5 + 0.5;
+}
+
 float3 unpackNormal1010102(uint packed)
 {
 	int x = (int)(packed << 22) >> 22;

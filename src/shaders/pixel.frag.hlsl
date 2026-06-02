@@ -2,7 +2,11 @@
 
 struct PixelOutput
 {
-	float4 color : SV_Target0;
+    float4 color : SV_Target0;
+	// float4 albedo : SV_Target0;
+	// float4 normal : SV_Target1;
+	// float4 material : SV_Target2;
+	// float4 emissive : SV_Target3;
 };
 
 struct LightSample{
@@ -160,6 +164,10 @@ PixelOutput main(VertexOutput input)
     if (mat.albedoTexture >= 0)
         baseColor *= Textures[NonUniformResourceIndex(mat.albedoTexture)].Sample(LinearWrap, input.uv);
 
+    if(mat.alphaMode != 0){
+        if(baseColor.a < 0.5) discard;
+    }
+
     // Normal mapping
     float3 N = normalize(input.worldNormal);
     if (mat.normalTexture >= 0)
@@ -174,7 +182,7 @@ PixelOutput main(VertexOutput input)
     }
 
     // Material params
-    float metallic  = mat.specularFactor.x;  // you packed F0 here, recover metallic
+    float metallic  = mat.specularFactor.x;
     float roughness = mat.specularFactor.w;
     roughness = max(roughness, 0.04);  // avoid division issues at zero roughness
 
@@ -218,6 +226,10 @@ PixelOutput main(VertexOutput input)
     }
 
     PixelOutput output;
-    output.color = float4(color, baseColor.a);
+    // output.albedo   = float4(baseColor.rgb, baseColor.a);
+    // output.normal   = float4(octEncode(N), 0.0, 0.0);  // BA reserved for motion or other
+    // output.material = float4(metallic, roughness, 0.0, float(input.materialIndex) / 255.0);
+    // output.emissive = float4(emissive, 0.0);
+    output.color = float4(color,baseColor.a);
     return output;
 }
