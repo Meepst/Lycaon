@@ -592,12 +592,20 @@ void buildBLAS(VkDevice device, VmaAllocator allocator,std::vector<Mesh>& meshes
         VK_CHECK(vkCreateAccelerationStructureKHR(device, &accelInfo, nullptr, &blas[i]));
     }
 
+    VkQueryPoolCreateInfo qpInfo{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qpInfo.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+    qpInfo.queryCount = uint32_t(meshes.size());
+
+    VkQueryPool queryPool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateQueryPool(device,&qpInfo,nullptr,&queryPool));
+
     VK_CHECK(vkResetCommandPool(device,commandPool,0));
 
     VkCommandBufferBeginInfo beginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+    vkCmdResetQueryPool(commandBuffer,queryPool,0,uint32_t(meshes.size()));
 
     for(size_t start = 0;start<meshes.size();){
         size_t stageOffset = 0;
@@ -622,6 +630,9 @@ void buildBLAS(VkDevice device, VmaAllocator allocator,std::vector<Mesh>& meshes
         stageBarrier(commandBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,accessFlags,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,accessFlags);
     }
 
+    vkCmdWriteAccelerationStructuresPropertiesKHR(commandBuffer,uint32_t(blas.size()),blas.data(),VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+        queryPool,0);
+
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
     VkSubmitInfo submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -631,6 +642,12 @@ void buildBLAS(VkDevice device, VmaAllocator allocator,std::vector<Mesh>& meshes
     VK_CHECK(vkQueueSubmit(queue,1,&submitInfo,VK_NULL_HANDLE));
     VK_CHECK(vkDeviceWaitIdle(device));
 
+    compactedSizes.resize(meshes.size());
+    VK_CHECK(vkGetQueryPoolResults(device,queryPool,0,uint32_t(compactedSizes.size()),
+        compactedSizes.size()*sizeof(VkDeviceSize), compactedSizes.data(),sizeof(VkDeviceSize),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+
+    vkDestroyQueryPool(device,queryPool,nullptr);
     destroyBuffer(allocator,stagingBuffer);
 }
 

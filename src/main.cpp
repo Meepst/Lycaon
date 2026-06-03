@@ -14,6 +14,7 @@
 #include "texture.h"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/string_cast.hpp>
+#include <glm/gtc/type_ptr.hpp>F
 
 
 struct FrameDescriptors {
@@ -854,14 +855,6 @@ void setDebugName(VkDevice device, uint64_t handle, VkObjectType type, const cha
     vkSetDebugUtilsObjectNameEXT(device, &info);
 }
 
-struct Camera
-{
-	vec3 position;
-	quat orientation;
-	float fovY;
-	float znear;
-};
-
 glm::mat4 perspectiveProjection(float fovY, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tanf(fovY / 2.0f);
@@ -1514,25 +1507,18 @@ int main() {
           ,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,dst,resourceDescriptorSize);
   }
 
-  Camera cam{};
+  Camera cam = scene.camera;
 
 
   Globals globals = {};
-  glm::vec3 eye = {0.f, 0.f, -1.f};
-  cam.position = eye;
-  cam.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };;
-  glm::vec3 target = {0.f, 0.f, 0.f};
-  glm::vec3 up     = {0.f, 1.f, 0.f};
 
-  float fovY   = glm::radians(60.f);
-  cam.fovY = fovY;
   float aspect  = float(swapchain.width) / float(swapchain.height);
-  float nearZ   = 0.1f;
   float farZ    = 100.f;
-  cam.znear = nearZ;
+
   // Reversed-Z projection (matches VK_COMPARE_OP_GREATER)
-  glm::mat4 view = glm::lookAt(eye, target, up);
-  glm::mat4 proj = glm::perspectiveRH_ZO(fovY, aspect, farZ, nearZ);
+  glm::mat4 view = glm::mat4_cast(glm::inverse(cam.orientation))
+                 * glm::translate(glm::mat4(1.f), -cam.position);
+  glm::mat4 proj = glm::perspectiveRH_ZO(cam.fovY, aspect, farZ, cam.znear);
 
   // Vulkan clip space correction (GLM defaults to OpenGL)
   proj[1][1] *= -1.f;
@@ -1541,13 +1527,13 @@ int main() {
   globals.proj        = proj;
   globals.viewProj    = proj * view;
   globals.invViewProj = glm::inverse(globals.viewProj);
-  globals.cameraPos   = eye;
+  globals.cameraPos   = cam.position;
 
   // Late afternoon sun
   globals.lightCount = scene.lights.size();
 
   globals.screenSize = {swapchain.width, swapchain.height};
-  globals.nearPlane  = nearZ;
+  globals.nearPlane  = cam.znear;
   globals.farPlane   = farZ;
 
   // lucas when u wake up make the buffers in niagara and depth image stuff
@@ -1778,6 +1764,8 @@ int main() {
 
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &cmdBufferBeginInfo));
 
+
+    globals.cameraPos = cam.position;
 
     globals.cameraPos = cam.position;
 

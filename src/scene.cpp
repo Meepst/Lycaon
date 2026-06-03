@@ -1,4 +1,6 @@
 #include "scene.h"
+#include "glm/gtc/quaternion.hpp"
+#include "glm/gtc/type_ptr.hpp"
 #include <meshoptimizer.h>
 
 #include <algorithm>
@@ -489,7 +491,6 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 } // anonymous namespace
 
 
-
 bool loadGltf(const std::string& filepath, Scene& scene,
               size_t maxVerticesPerMeshlet,
               size_t maxTrianglesPerMeshlet)
@@ -508,6 +509,37 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		std::fprintf(stderr, "[gltf] Failed to load buffers: %s\n", filepath.c_str());
 		cgltf_free(data);
 		return false;
+	}
+
+	scene.camera = {};
+	for(cgltf_size i=0;i<data->nodes_count;i++){
+	    const cgltf_node& node = data->nodes[i];
+		if(!node.camera){
+		    continue;
+		}
+
+		cgltf_float m[16];
+		cgltf_node_transform_world(&node, m);
+		glm::mat4 world = glm::make_mat4(m);
+
+		scene.camera.position = glm::vec3(world[3]);
+
+		glm::mat3 rot = glm::mat3(world);
+		rot[0] = glm::normalize(rot[0]);
+        rot[1] = glm::normalize(rot[1]);
+        rot[2] = glm::normalize(rot[2]);
+        scene.camera.orientation = glm::quat_cast(rot);
+
+        const cgltf_camera* cam = node.camera;
+        if(cam->type == cgltf_camera_type_perspective){
+            scene.camera.fovY = cam->data.perspective.yfov;
+            scene.camera.znear = cam->data.perspective.znear;
+        }else{
+            scene.camera.fovY = glm::radians(45.0f);
+            scene.camera.znear = cam->data.orthographic.znear;
+        }
+
+        break;
 	}
 
 	scene.samplers.resize(data->samplers_count);

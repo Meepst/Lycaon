@@ -104,6 +104,13 @@ struct Geometry
 	std::vector<uint32_t> meshletData; // vertex indices + packed triangle indices
 };
 
+struct Camera
+{
+	vec3 position;
+	quat orientation;
+	float fovY;
+	float znear;
+};
 
 struct Light{
     vec3 position;
@@ -121,6 +128,7 @@ struct Light{
 struct Scene
 {
 	Geometry                 geometry;
+	Camera                   camera;
 	std::vector<Mesh>        meshes;
 	std::vector<Material>    materials;
 	std::vector<MeshDraw>    draws;
