@@ -1556,9 +1556,9 @@ int main() {
   Buffer matBuffer = createBuffer(m_device,m_vmaAllocator,scene.materials.size()*sizeof(Material),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   Buffer vertBuffer = createBuffer(m_device,m_vmaAllocator,scene.geometry.vertices.size()*sizeof(Vertex),
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   Buffer indexBuffer = createBuffer(m_device,m_vmaAllocator,scene.geometry.indices.size()*sizeof(uint32_t),
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   Buffer drawBuffer = createBuffer(m_device,m_vmaAllocator,scene.draws.size()*sizeof(MeshDraw),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);;
   Buffer globalBuffer = createBuffer(m_device,m_vmaAllocator,sizeof(globals),
@@ -1583,6 +1583,22 @@ int main() {
   setDebugName(m_device, (uint64_t)lightBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"lightBuffer");
   setDebugName(m_device, (uint64_t)aliasTableBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"aliasTableBuffer");
 
+  std::array<UploadEntry, 10> uploads = {{
+      { meshBuffer.buffer,       scene.meshes.data(),              scene.meshes.size() * sizeof(Mesh) },
+      { matBuffer.buffer,        scene.materials.data(),           scene.materials.size() * sizeof(Material) },
+      { vertBuffer.buffer,       scene.geometry.vertices.data(),   scene.geometry.vertices.size() * sizeof(Vertex) },
+      { indexBuffer.buffer,      scene.geometry.indices.data(),    scene.geometry.indices.size() * sizeof(uint32_t) },
+      { drawBuffer.buffer,       scene.draws.data(),               scene.draws.size() * sizeof(MeshDraw) },
+      { globalBuffer.buffer,     &globals,                         sizeof(globals) },
+      { meshletDataBuffer.buffer,scene.geometry.meshletData.data(),scene.geometry.meshletData.size() * sizeof(uint32_t) },
+      { meshletBuffer.buffer,    scene.geometry.meshlets.data(),   scene.geometry.meshlets.size() * sizeof(Meshlet) },
+      { lightBuffer.buffer,    scene.lights.data(),   scene.lights.size() * sizeof(Light) },
+      { aliasTableBuffer.buffer,    aliasTable.data(),   aliasTable.size() * sizeof(AliasEntry) },
+  }};
+
+  batchUpload(m_device, m_vmaAllocator,initCommandBuffer,
+      graphicsQueue,uploads);
+
   std::vector<VkAccelerationStructureKHR> blas;
   std::vector<VkDeviceAddress> blasAddresses;
   VkAccelerationStructureKHR tlas = nullptr;
@@ -1599,16 +1615,17 @@ int main() {
       initCommandBuffer,graphicsQueue);
 
   blasAddresses.resize(blas.size());
-
+  printf("blas count: %ul\n", blas.size());
   for(size_t i=0;i<blas.size();i++){
     VkAccelerationStructureDeviceAddressInfoKHR info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
     info.accelerationStructure = blas[i];
     blasAddresses[i] = vkGetAccelerationStructureDeviceAddressKHR(m_device, &info);
   }
-
+  printf("obtained blas addresses\n");
   tlasInstanceBuffer = createBuffer(m_device,m_vmaAllocator,sizeof(VkAccelerationStructureInstanceKHR)*scene.draws.size(),
       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,VMA_MEMORY_USAGE_AUTO);
 
+  printf("made tlas instances\n");
   for(size_t i=0;i<scene.draws.size();i++){
       const MeshDraw& draw = scene.draws[i];
       assert(draw.meshIndex < blas.size());
@@ -1618,9 +1635,9 @@ int main() {
 
       memcpy(static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer.info.pMappedData) + i, &instance, sizeof(VkAccelerationStructureInstanceKHR));
   }
-
+  printf("completed fill instace of priors\n");
   tlas = createTLAS(m_device,m_vmaAllocator,tlasStagingBuffer,tlasInstanceBuffer,scene.draws.size(),tlasBuffer,asProps);
-
+  printf("made tlas\n");
   deletionQueue.push_back([&](){
       destroyBuffer(m_vmaAllocator, meshBuffer);
       destroyBuffer(m_vmaAllocator, matBuffer);
@@ -1641,22 +1658,6 @@ int main() {
           vkDestroyAccelerationStructureKHR(m_device,as,0);
       }
   });
-
-  std::array<UploadEntry, 10> uploads = {{
-      { meshBuffer.buffer,       scene.meshes.data(),              scene.meshes.size() * sizeof(Mesh) },
-      { matBuffer.buffer,        scene.materials.data(),           scene.materials.size() * sizeof(Material) },
-      { vertBuffer.buffer,       scene.geometry.vertices.data(),   scene.geometry.vertices.size() * sizeof(Vertex) },
-      { indexBuffer.buffer,      scene.geometry.indices.data(),    scene.geometry.indices.size() * sizeof(uint32_t) },
-      { drawBuffer.buffer,       scene.draws.data(),               scene.draws.size() * sizeof(MeshDraw) },
-      { globalBuffer.buffer,     &globals,                         sizeof(globals) },
-      { meshletDataBuffer.buffer,scene.geometry.meshletData.data(),scene.geometry.meshletData.size() * sizeof(uint32_t) },
-      { meshletBuffer.buffer,    scene.geometry.meshlets.data(),   scene.geometry.meshlets.size() * sizeof(Meshlet) },
-      { lightBuffer.buffer,    scene.lights.data(),   scene.lights.size() * sizeof(Light) },
-      { aliasTableBuffer.buffer,    aliasTable.data(),   aliasTable.size() * sizeof(AliasEntry) },
-  }};
-
-  batchUpload(m_device, m_vmaAllocator,initCommandBuffer,
-      graphicsQueue,uploads);
 
 
   Image gbufferTargets[gbufferCount] = {};

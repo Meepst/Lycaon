@@ -571,7 +571,7 @@ void buildBLAS(VkDevice device, VmaAllocator allocator,std::vector<Mesh>& meshes
 
     blasBuffer = createBuffer(device, allocator, totalAccelerationSize,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
-    Buffer stagingBuffer = createBuffer(device,allocator,std::max(kDefaultScratch, maxScratchSize),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO);
+    Buffer stagingBuffer = createBuffer(device,allocator,std::max(kDefaultScratch, maxScratchSize),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,deviceProperties.minAccelerationStructureScratchOffsetAlignment);
 
     printf("BLAS accelerationStructureSize: %.2f MB, scratchSize: %.2f MB (max %.2f MB), %.3fM triangles\n", double(totalAccelerationSize) / 1e6, double(stagingBuffer.size) / 1e6, double(maxScratchSize) / 1e6, double(totalPrimitiveCount) / 1e6);
 
@@ -698,7 +698,7 @@ void compactBLAS(VkDevice device, VmaAllocator allocator,std::vector<VkAccelerat
 }
 
 VkAccelerationStructureKHR createTLAS(VkDevice device, VmaAllocator allocator,Buffer& stagingBuffer, const Buffer& instanceBuffer,
-    uint32_t primitiveCount, Buffer& tlasBuffer, VkPhysicalDeviceProperties2 deviceProperties){
+    uint32_t primitiveCount, Buffer& tlasBuffer, VkPhysicalDeviceAccelerationStructurePropertiesKHR deviceProperties){
     VkAccelerationStructureGeometryKHR geometry = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
     geometry.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -718,9 +718,10 @@ VkAccelerationStructureKHR createTLAS(VkDevice device, VmaAllocator allocator,Bu
     printf("TLAS accelerationStructureSize: %.2f MB, scratchSize: %.2f MB, updateScratch: %.2f MB\n",
         double(sizeInfo.accelerationStructureSize) / 1e6, double(sizeInfo.buildScratchSize) / 1e6, double(sizeInfo.updateScratchSize) / 1e6);
 
-    tlasBuffer = createBuffer(device,allocator,sizeInfo.accelerationStructureSize,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 256);
-    stagingBuffer = createBuffer(device,allocator,std::max(sizeInfo.buildScratchSize, sizeInfo.updateScratchSize),)
+    tlasBuffer = createBuffer(device,allocator,sizeInfo.accelerationStructureSize,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+    stagingBuffer = createBuffer(device,allocator,std::max(sizeInfo.buildScratchSize, sizeInfo.updateScratchSize),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, deviceProperties.minAccelerationStructureScratchOffsetAlignment);
 
     VkAccelerationStructureCreateInfoKHR accelerationInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     accelerationInfo.buffer = tlasBuffer.buffer;
