@@ -58,7 +58,7 @@ void buildBLAS(VkDevice device, VmaAllocator allocator,std::vector<Mesh>& meshes
 void compactBLAS(VkDevice device, VmaAllocator allocator,std::vector<VkAccelerationStructureKHR>& blas,const std::vector<VkDeviceSize>& compactedSizes,
     Buffer& blasBuffer, VkCommandPool commandPool, VkCommandBuffer commandBuffer, VkQueue queue);
 
-VkAccelerationStructureKHR createTLAS(VkDevice device, VmaAllocator allocator,Buffer& stagingBuffer, const Buffer& instanceBuffer,
+VkAccelerationStructureKHR createTLAS(VkDevice device, VmaAllocator allocator,Buffer& stagingBuffer,const Buffer& instanceBuffer,
     uint32_t primitiveCount, Buffer& tlasBuffer,VkPhysicalDeviceAccelerationStructurePropertiesKHR deviceProperties);
 
 void buildTlas(VkDevice device, VkCommandBuffer commandBuffer, VkAccelerationStructureKHR tlas, const Buffer& tlasBuffer,

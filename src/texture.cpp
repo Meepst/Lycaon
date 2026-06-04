@@ -1,5 +1,7 @@
 #include "texture.h"
 
+
+
 Image createKTXImage(VmaAllocator allocator,VkDevice device, VkQueue queue,
     VkCommandBuffer commandBuffer, ktxTexture2* texture, VkImageUsageFlags usage){
     if(ktxTexture2_NeedsTranscoding(texture)){

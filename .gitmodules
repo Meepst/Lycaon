@@ -25,3 +25,6 @@
 [submodule "dependencies/KTX-Software"]
 	path = dependencies/KTX-Software
 	url = git@github.com:KhronosGroup/KTX-Software.git
+[submodule "dependencies/bcdec"]
+	path = dependencies/bcdec
+	url = git@github.com:iOrange/bcdec.git
