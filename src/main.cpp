@@ -1388,49 +1388,62 @@ int main() {
   buildAliasTable(weights, aliasTable);
 
   //std::vector<DecodedImage> decodedImages(scene.textures.size());
-  std::vector<size_t> imageJobs(scene.textures.size());
-  std::iota(imageJobs.begin(),imageJobs.end(),0);
-  std::vector<ktxTexture2*> ktxTextures(scene.textures.size(), nullptr);
+  // std::vector<size_t> imageJobs(scene.textures.size());
+  // std::iota(imageJobs.begin(),imageJobs.end(),0);
+  // std::vector<ktxTexture2*> ktxTextures(scene.textures.size(), nullptr);
 
   const bool fromFile = (sceneExe == "gltf");
 
   double beginImageTime = glfwGetTime();
 
-  std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
-      [&](size_t i){
-          auto& texture = scene.textures[i];
-          std::string texName = sceneDir+texture.uri;
-          KTX_error_code ktxRes = ktxTexture2_CreateFromNamedFile(
-              texName.c_str(),KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-              &ktxTextures[i]
-          );
-          //printf("file name: %s and result %d\n",texName.c_str(),ktxRes);
-          assert(ktxRes == KTX_SUCCESS);
-      });
+  // std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
+  //     [&](size_t i){
+  //         auto& texture = scene.textures[i];
+  //         std::string texName = sceneDir+texture.uri;
+  //         KTX_error_code ktxRes = ktxTexture2_CreateFromNamedFile(
+  //             texName.c_str(),KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+  //             &ktxTextures[i]
+  //         );
+  //         //printf("file name: %s and result %d\n",texName.c_str(),ktxRes);
+  //         assert(ktxRes == KTX_SUCCESS);
+  //     });
 
   std::vector<Image> images;
-  images.reserve(ktxTextures.size());
+  images.reserve(scene.textures.size());
   size_t imageMemory = 0;
-
-  for(uint32_t i=0;i<ktxTextures.size();i++){
-      assert(ktxTextures[i] != nullptr);
-
-      Image img = createKTXImage(m_vmaAllocator,m_device,graphicsQueue,
-          initCommandBuffer,ktxTextures[i],VK_IMAGE_USAGE_TRANSFER_DST_BIT
-          | VK_IMAGE_USAGE_SAMPLED_BIT);
-
-      VkMemoryRequirements memoryRequirements{};
-      vkGetImageMemoryRequirements(m_device, img.image, &memoryRequirements);
-      imageMemory += memoryRequirements.size;
+  std::vector<uint8_t> imageStaging(1024*1024*128);
+  for(size_t i=0;i<scene.textures.size();i++){
+      Image img = {};
+      auto& texture = scene.textures[i];
+      std::string texName = sceneDir+texture.uri;
+      if(!createDDSImage(img,m_device, m_vmaAllocator, initCommandPool, initCommandBuffer,
+          graphicsQueue, imageStaging, texName.c_str())){
+          printf("Failed to load image: %s\n",texName.c_str());
+      }
 
       images.push_back(img);
   }
 
-  for(auto& kt : ktxTextures){
-      if(kt){
-          ktxTexture_Destroy(ktxTexture(kt));
-      }
-  }
+
+  // for(uint32_t i=0;i<ktxTextures.size();i++){
+  //     assert(ktxTextures[i] != nullptr);
+
+  //     Image img = createKTXImage(m_vmaAllocator,m_device,graphicsQueue,
+  //         initCommandBuffer,ktxTextures[i],VK_IMAGE_USAGE_TRANSFER_DST_BIT
+  //         | VK_IMAGE_USAGE_SAMPLED_BIT);
+
+  //     VkMemoryRequirements memoryRequirements{};
+  //     vkGetImageMemoryRequirements(m_device, img.image, &memoryRequirements);
+  //     imageMemory += memoryRequirements.size;
+
+  //     images.push_back(img);
+  // }
+
+  // for(auto& kt : ktxTextures){
+  //     if(kt){
+  //         ktxTexture_Destroy(ktxTexture(kt));
+  //     }
+  // }
 
   // std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
   //     [&](size_t i){

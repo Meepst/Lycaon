@@ -1,10 +1,10 @@
 #include "texture.h"
+#include "vulkan/vulkan_core.h"
 
 #define BCDEC_IMPLEMENTATION
 #include <bcdec.h>
 
 #include <memory>
-#include <new>
 
 struct DDS_PIXELFORMAT{
     unsigned int dwSize;
@@ -134,23 +134,8 @@ static size_t getImageSizeBC(unsigned int width, unsigned int height, unsigned i
 	return result;
 }
 
-static size_t getImageSizeRGBA(unsigned int width, unsigned int height, unsigned int levels)
-{
-	size_t result = 0;
-
-	for (unsigned int i = 0; i < levels; ++i)
-	{
-		result += size_t(width) * size_t(height) * 4;
-
-		width = width > 1 ? width / 2 : 1;
-		height = height > 1 ? height / 2 : 1;
-	}
-
-	return result;
-}
-
 bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCommandPool commandPool,
-    VkCommandBuffer commandBuffer, VkQueue queue, const Buffer& staging, const char* path){
+    VkCommandBuffer commandBuffer, VkQueue queue, std::vector<uint8_t> staging, const char* path){
     FILE* file = nullptr;
     errno_t err = fopen_s(&file, path, "rb");
 
@@ -162,12 +147,12 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
     std::unique_ptr<FILE,int (*)(FILE*)> filePtr(file,fclose);
 
     unsigned int magic = 0;
-    if(fread_s(&magic,sizeof(magic),sizeof(size_t),1,file) != 1 || magic != fourCC("DDS ")){
+    if(fread(&magic,sizeof(magic),1,file) != 1 || magic != fourCC("DDS ")){
         return false;
     }
 
     DDS_HEADER header = {};
-    if(fread_s(&header,sizeof(header),sizeof(size_t),1,file)!=1){
+    if(fread(&header,sizeof(header),1,file)!=1){
         return false;
     }
 
@@ -192,6 +177,34 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
     if(format == VK_FORMAT_UNDEFINED){
         return false;
     }
+
+    uint32_t blockSize = (format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || format == VK_FORMAT_BC4_SNORM_BLOCK || format == VK_FORMAT_BC4_UNORM_BLOCK) ? 8 : 16;
+    size_t imageSize = getImageSizeBC(header.dwWidth,header.dwHeight,header.dwMipMapCount,blockSize);
+    printf("Image size: %zu\n",imageSize);
+    if(imageSize == 0){
+        printf("No image size\n");
+        return false;
+    }
+
+    size_t readSize = fread(staging.data(),1,imageSize,file);
+    if(readSize != imageSize){
+        printf("Read size does not match image size");
+        return false;
+    }
+
+    // makes sure we read whole file, -1 is eof
+    if(fgetc(file)!=-1){
+        return false;
+    }
+
+    filePtr.reset();
+    file = nullptr;
+
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image = createImage(allocator,device,queue,commandBuffer,staging.data(),VkExtent3D(header.dwWidth,header.dwHeight,header.dwMipMapCount),
+        format,usage,true);
+
+    return true;
 }
 
 
