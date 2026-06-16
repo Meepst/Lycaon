@@ -187,6 +187,7 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
 
     size_t readSize = fread(staging.info.pMappedData,1,imageSize,file);
     printf("Finished reading image file\n");
+    printf("Mip count: %zu\n",format);
     if(readSize != imageSize){
         printf("Read size does not match image size");
         return false;
@@ -219,21 +220,6 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
 	uint32_t mipHeight = header.dwHeight;
 
 	for(uint32_t i=0;i<header.dwMipMapCount;i++){
-	    VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrier.image = image.image;
-        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 1, 0, 1 };
-
-        VkDependencyInfo depInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-                depInfo.imageMemoryBarrierCount = 1;
-                depInfo.pImageMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
-
 	    VkBufferImageCopy region = {
 			bufferOffset,
 			0,
@@ -243,7 +229,7 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
            	{mipWidth,mipHeight,1},
 		};
 		vkCmdCopyBufferToImage(commandBuffer,staging.buffer,image.image,
-		VK_IMAGE_LAYOUT_GENERAL,1,&region);
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region);
 
 		bufferOffset += ((mipWidth+3)/4)*((mipHeight+3)/4)*blockSize;
 
@@ -252,6 +238,28 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
 	}
 
 	assert(bufferOffset == imageSize);
+
+	VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+    barrier.srcStageMask     = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask    = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask     = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.image            = image.image;
+    barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, 1 };
+
+    VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers    = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dep);
+	VK_CHECK(vkEndCommandBuffer(commandBuffer));
+
+	VkCommandBufferSubmitInfo subInfo = createCommandBufferSubmitInfo(commandBuffer);
+    VkSubmitInfo2 submitInfo = createDrawSubmitInfo(&subInfo, nullptr, nullptr);
+
+    VK_CHECK(vkQueueSubmit2(queue, 1, &submitInfo, nullptr));
+    vkDeviceWaitIdle(device);
 
     return true;
 }

@@ -1411,7 +1411,8 @@ int main() {
   std::vector<Image> images;
   images.reserve(scene.textures.size());
   size_t imageMemory = 0;
-  std::vector<uint8_t> imageStaging(1024*1024*128);
+  Buffer imageStaging = createBuffer(m_device,m_vmaAllocator,128*1024*1024,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VMA_MEMORY_USAGE_AUTO);
   for(size_t i=0;i<scene.textures.size();i++){
       Image img = {};
       auto& texture = scene.textures[i];
@@ -1423,7 +1424,7 @@ int main() {
 
       images.push_back(img);
   }
-
+  destroyBuffer(m_vmaAllocator,imageStaging);
 
   // for(uint32_t i=0;i<ktxTextures.size();i++){
   //     assert(ktxTextures[i] != nullptr);
