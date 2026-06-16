@@ -8,13 +8,13 @@
 #include <deque>
 #include <functional>
 #include <iostream>
-#include <execution>
+
 #include <stb_image.h>
 #include "spirv_reflect.h"
 #include "texture.h"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/string_cast.hpp>
-#include <glm/gtc/type_ptr.hpp>F
+#include <glm/gtc/type_ptr.hpp>
 
 
 struct FrameDescriptors {

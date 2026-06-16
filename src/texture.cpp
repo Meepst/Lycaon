@@ -135,7 +135,7 @@ static size_t getImageSizeBC(unsigned int width, unsigned int height, unsigned i
 }
 
 bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCommandPool commandPool,
-    VkCommandBuffer commandBuffer, VkQueue queue, std::vector<uint8_t> staging, const char* path){
+    VkCommandBuffer commandBuffer, VkQueue queue, const Buffer& staging, const char* path){
     FILE* file = nullptr;
     errno_t err = fopen_s(&file, path, "rb");
 
@@ -157,7 +157,7 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
     }
 
     DDS_HEADER_DXT10 header10 = {};
-    if(header.ddspf.dwFourCC == fourCC("DX10")&&fread_s(&header10,sizeof(header10),sizeof(size_t),1,file)!=1){
+    if(header.ddspf.dwFourCC == fourCC("DX10")&&fread(&header10,sizeof(header10),1,file)!=1){
         return false;
     }
 
@@ -182,11 +182,11 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
     size_t imageSize = getImageSizeBC(header.dwWidth,header.dwHeight,header.dwMipMapCount,blockSize);
     printf("Image size: %zu\n",imageSize);
     if(imageSize == 0){
-        printf("No image size\n");
         return false;
     }
 
-    size_t readSize = fread(staging.data(),1,imageSize,file);
+    size_t readSize = fread(staging.info.pMappedData,1,imageSize,file);
+    printf("Finished reading image file\n");
     if(readSize != imageSize){
         printf("Read size does not match image size");
         return false;
@@ -194,6 +194,7 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
 
     // makes sure we read whole file, -1 is eof
     if(fgetc(file)!=-1){
+        printf("Did not find EOF\n");
         return false;
     }
 
@@ -201,8 +202,56 @@ bool createDDSImage(Image& image, VkDevice device, VmaAllocator allocator, VkCom
     file = nullptr;
 
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    image = createImage(allocator,device,queue,commandBuffer,staging.data(),VkExtent3D(header.dwWidth,header.dwHeight,header.dwMipMapCount),
-        format,usage,true);
+    image = createImage(allocator, device, VkExtent3D(header.dwWidth,header.dwHeight,header.dwMipMapCount)
+        , format, usage, true);
+
+    VK_CHECK(vkResetCommandPool(device, commandPool,0));
+
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+	transitionImage(commandBuffer, image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	size_t bufferOffset = 0;
+	uint32_t mipWidth = header.dwWidth;
+	uint32_t mipHeight = header.dwHeight;
+
+	for(uint32_t i=0;i<header.dwMipMapCount;i++){
+	    VkImageMemoryBarrier2 barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.image = image.image;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 1, 0, 1 };
+
+        VkDependencyInfo depInfo = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                depInfo.imageMemoryBarrierCount = 1;
+                depInfo.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+
+	    VkBufferImageCopy region = {
+			bufferOffset,
+			0,
+			0,
+           	{VK_IMAGE_ASPECT_COLOR_BIT,i,0,1},
+           	{0,0,0},
+           	{mipWidth,mipHeight,1},
+		};
+		vkCmdCopyBufferToImage(commandBuffer,staging.buffer,image.image,
+		VK_IMAGE_LAYOUT_GENERAL,1,&region);
+
+		bufferOffset += ((mipWidth+3)/4)*((mipHeight+3)/4)*blockSize;
+
+		mipWidth = mipWidth > 1 ? mipWidth/2:1;
+		mipHeight = mipHeight > 1 ? mipHeight/2:1;
+	}
+
+	assert(bufferOffset == imageSize);
 
     return true;
 }
