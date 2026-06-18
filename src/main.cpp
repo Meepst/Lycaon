@@ -33,16 +33,6 @@ struct alignas(16) TaskConstants
 	uint32_t _pad;
 };
 
-// struct PushConstants{
-//     uint32_t globals;
-//     uint32_t vertexBuffer;
-//     uint32_t meshletData;
-//     uint32_t meshletBuffer;
-//     uint32_t meshes;
-//     uint32_t draws;
-//     uint32_t materials;
-// };
-
 struct alignas(64) Globals{
     glm::mat4 viewProj;
     glm::mat4 view;
@@ -68,14 +58,6 @@ struct Program{
     VkDeviceSize descriptorSize = 0;
     uint32_t pushConstantSize = 0;
     uint32_t pushDescriptorCount = 0;
-};
-
-struct DecodedImage{
-    unsigned char* pixels = nullptr;
-    int width = 0;
-    int height = 0;
-    bool ok = false;
-    std::string label;
 };
 
 // Globals
@@ -176,9 +158,6 @@ void gatherResources(std::vector<SpvReflectShaderModule*> modules, uint32_t& res
             if (desc->set != targetSet)
                 continue;
 
-            // Skip bindings that are declared but never actually used by the entry point.
-            // This is the main source of "superfluous" collisions — a binding may appear
-            // in one stage as unused and conflict with its real type in another stage.
             if (!desc->accessed)
                 continue;
 
@@ -194,14 +173,12 @@ void gatherResources(std::vector<SpvReflectShaderModule*> modules, uint32_t& res
                 (resourceTypes[binding] == VK_DESCRIPTOR_TYPE_SAMPLER);
 
             if (alreadySeen){
-                // Types must match, OR one side is a sampler aliasing a
-                // sampled image at the same binding (combined-image-sampler style).
                 const bool typesMatch = (resourceTypes[binding] == type);
                 const bool samplerAliasing = incomingIsSampler || existingIsSampler;
                 assert(typesMatch || samplerAliasing);
             }
 
-            // Non-sampler always wins. Sampler only fills an empty slot.
+
             if (!alreadySeen || (!incomingIsSampler && existingIsSampler)){
                 resourceTypes[binding] = type;
             }
@@ -328,7 +305,6 @@ Program createProgram(VkDevice device, std::vector<SpvReflectShaderModule*> modu
 	// compute push constant size from reflection
 	size_t computedPushConstantSize = 0;
 	for (auto* mod : modules) {
-        printf("Module stage %d push constants:\n", mod->shader_stage);
         uint32_t pcCount = 0;
         spvReflectEnumeratePushConstantBlocks(mod,&pcCount, nullptr);
         std::vector<SpvReflectBlockVariable*> blocks(pcCount);
@@ -1049,8 +1025,7 @@ int main() {
   GLFWwindow *window =
       glfwCreateWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Lycaon", nullptr, nullptr);
 
-  glfwSetMouseButtonCallback(window, mouseCallback);
-  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  glfwSetKeyCallback(window, keyCallback);
   glfwSetMouseButtonCallback(window, mouseCallback);
 
   vkb::InstanceBuilder builder;
@@ -1067,8 +1042,7 @@ int main() {
                              .set_debug_callback(debugCallback)
                              .set_debug_messenger_severity(
                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
                              .set_debug_messenger_type(
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
@@ -1332,14 +1306,6 @@ int main() {
   deletionQueue.push_back(
       [&]() { vkDestroyCommandPool(m_device, initCommandPool, nullptr); });
 
-  // const char *shedPath = "assets/theShed/the_shed.glb";
-  // Scene shedScene = {};
-  // bool shedResult = loadGltf(shedPath,shedScene);
-  // if (!shedResult) {
-  //   assert(!"failed to load shed scene");
-  // }
-
-  // printSceneSummary(shedScene);
 
   const char *scenePath = "assets/sponza/NewSponza_Main_glTF_003.gltf";
   Scene scene = {};
@@ -1351,23 +1317,6 @@ int main() {
   std::string sceneDir(scenePath);
   sceneDir = sceneDir.substr(0,sceneDir.find_last_of("/\\")+1);
 
-  std::string sceneExe(scenePath);
-  size_t dotPos = sceneExe.find_last_of(".");
-  sceneExe = (dotPos == std::string::npos) ? "" : sceneExe.substr(dotPos + 1);
-  printf("exe: %s\n",sceneExe.c_str());
-
-  //printSceneSummary(scene);
-  //
-  // for(size_t i=0;i<scene.geometry.vertices.size();i++){
-  //     const Vertex& vert = scene.geometry.vertices[i];
-  //     std::cout << "Vert: " << i << " tu: " << vert.tu<< " tv: " << vert.tv<<std::endl;
-  // }
-
-  // std::vector<int> hist(scene.materials.size(), 0);
-  //    for (const auto& d : scene.draws) hist[d.materialIndex]++;
-  //    for (size_t i = 0; i < hist.size(); ++i)
-  //        fprintf(stderr, "materialIndex %zu: %d draws\n", i, hist[i]);
-  //    fflush(stderr);
   uint8_t maxV = 0, maxT = 0;
   for(auto& ml : scene.geometry.meshlets){
       maxV = std::max(maxV,ml.vertexCount);
@@ -1387,26 +1336,7 @@ int main() {
   std::vector<AliasEntry> aliasTable;
   buildAliasTable(weights, aliasTable);
 
-  //std::vector<DecodedImage> decodedImages(scene.textures.size());
-  // std::vector<size_t> imageJobs(scene.textures.size());
-  // std::iota(imageJobs.begin(),imageJobs.end(),0);
-  // std::vector<ktxTexture2*> ktxTextures(scene.textures.size(), nullptr);
-
-  const bool fromFile = (sceneExe == "gltf");
-
   double beginImageTime = glfwGetTime();
-
-  // std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
-  //     [&](size_t i){
-  //         auto& texture = scene.textures[i];
-  //         std::string texName = sceneDir+texture.uri;
-  //         KTX_error_code ktxRes = ktxTexture2_CreateFromNamedFile(
-  //             texName.c_str(),KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-  //             &ktxTextures[i]
-  //         );
-  //         //printf("file name: %s and result %d\n",texName.c_str(),ktxRes);
-  //         assert(ktxRes == KTX_SUCCESS);
-  //     });
 
   std::vector<Image> images;
   images.reserve(scene.textures.size());
@@ -1417,84 +1347,19 @@ int main() {
       Image img = {};
       auto& texture = scene.textures[i];
       std::string texName = sceneDir+texture.uri;
+      bool isSRGB = static_cast<bool>(scene.textureCSpaces[i]);
       if(!createDDSImage(img,m_device, m_vmaAllocator, initCommandPool, initCommandBuffer,
-          graphicsQueue, imageStaging, texName.c_str())){
+          graphicsQueue, imageStaging, texName.c_str(),isSRGB)){
           printf("Failed to load image: %s\n",texName.c_str());
       }
+
+      VkMemoryRequirements memoryRequirements{};
+      vkGetImageMemoryRequirements(m_device, img.image, &memoryRequirements);
+      imageMemory += memoryRequirements.size;
 
       images.push_back(img);
   }
   destroyBuffer(m_vmaAllocator,imageStaging);
-
-  // for(uint32_t i=0;i<ktxTextures.size();i++){
-  //     assert(ktxTextures[i] != nullptr);
-
-  //     Image img = createKTXImage(m_vmaAllocator,m_device,graphicsQueue,
-  //         initCommandBuffer,ktxTextures[i],VK_IMAGE_USAGE_TRANSFER_DST_BIT
-  //         | VK_IMAGE_USAGE_SAMPLED_BIT);
-
-  //     VkMemoryRequirements memoryRequirements{};
-  //     vkGetImageMemoryRequirements(m_device, img.image, &memoryRequirements);
-  //     imageMemory += memoryRequirements.size;
-
-  //     images.push_back(img);
-  // }
-
-  // for(auto& kt : ktxTextures){
-  //     if(kt){
-  //         ktxTexture_Destroy(ktxTexture(kt));
-  //     }
-  // }
-
-  // std::for_each(std::execution::par,imageJobs.begin(),imageJobs.end(),
-  //     [&](size_t i){
-  //         const auto& tex = scene.textures[i];
-  //         DecodedImage& di = decodedImages[i];
-
-  //         int channels = 0;
-  //         if(fromFile){
-  //             std::string texName = sceneDir+tex.uri;
-  //             di.label = texName;
-  //             di.pixels = stbi_load(texName.c_str(),
-  //                   &di.width, &di.height, &channels, STBI_rgb_alpha);
-  //         }else{
-  //             di.label = tex.name;
-  //             di.pixels = stbi_load_from_memory(tex.data.data(), (int)tex.data.size(),
-  //                   &di.width, &di.height, &channels, STBI_rgb_alpha);
-  //         }
-  //         di.ok = (di.pixels != nullptr);
-  //     });
-
-  // std::vector<Image> images;
-  // images.reserve(decodedImages.size());
-  // size_t imageMemory = 0;
-
-  // for(size_t i=0;i<decodedImages.size();i++){
-  //     DecodedImage& di = decodedImages[i];
-  //     if(!di.ok){
-  //         printf("Failed to load image %s\n", di.label.c_str());
-  //         continue;
-  //     }
-  //     printf("Texture: %s\n",scene.textures[i].name.c_str());
-  //     VkExtent3D size = { uint32_t(di.width), uint32_t(di.height), 4 };
-  //     Image image = createImage(m_vmaAllocator, m_device, graphicsQueue, initCommandBuffer,
-  //             di.pixels, size, VK_FORMAT_BC7_SRGB_BLOCK,
-  //             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, false);
-
-  //     VkMemoryRequirements memoryRequirements{};
-  //     vkGetImageMemoryRequirements(m_device, image.image, &memoryRequirements);
-  //     imageMemory += memoryRequirements.size;
-
-  //     images.push_back(image);
-  //     stbi_image_free(di.pixels);
-  //     di.pixels = nullptr;
-  // }
-
-  // for(auto& di : decodedImages){
-  //     if(di.pixels){
-  //         stbi_image_free(di.pixels);
-  //     }
-  // }
 
   deletionQueue.push_back([&](){
       for(Image& image : images){
@@ -1529,7 +1394,7 @@ int main() {
   float aspect  = float(swapchain.width) / float(swapchain.height);
   float farZ    = 100.f;
 
-  // Reversed-Z projection (matches VK_COMPARE_OP_GREATER)
+  // Reversed-Z projection matches VK_COMPARE_OP_GREATER
   glm::mat4 view = glm::mat4_cast(glm::inverse(cam.orientation))
                  * glm::translate(glm::mat4(1.f), -cam.position);
   glm::mat4 proj = glm::perspectiveRH_ZO(cam.fovY, aspect, farZ, cam.znear);
@@ -1550,7 +1415,6 @@ int main() {
   globals.nearPlane  = cam.znear;
   globals.farPlane   = farZ;
 
-  // lucas when u wake up make the buffers in niagara and depth image stuff
   Buffer meshBuffer = createBuffer(m_device,m_vmaAllocator,scene.meshes.size()*sizeof(Mesh),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   Buffer matBuffer = createBuffer(m_device,m_vmaAllocator,scene.materials.size()*sizeof(Material),
@@ -1615,17 +1479,15 @@ int main() {
       initCommandBuffer,graphicsQueue);
 
   blasAddresses.resize(blas.size());
-  printf("blas count: %ul\n", blas.size());
   for(size_t i=0;i<blas.size();i++){
     VkAccelerationStructureDeviceAddressInfoKHR info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
     info.accelerationStructure = blas[i];
     blasAddresses[i] = vkGetAccelerationStructureDeviceAddressKHR(m_device, &info);
   }
-  printf("obtained blas addresses\n");
+
   tlasInstanceBuffer = createBuffer(m_device,m_vmaAllocator,sizeof(VkAccelerationStructureInstanceKHR)*scene.draws.size(),
       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,VMA_MEMORY_USAGE_AUTO);
 
-  printf("made tlas instances\n");
   for(size_t i=0;i<scene.draws.size();i++){
       const MeshDraw& draw = scene.draws[i];
       assert(draw.meshIndex < blas.size());
@@ -1635,9 +1497,9 @@ int main() {
 
       memcpy(static_cast<VkAccelerationStructureInstanceKHR*>(tlasInstanceBuffer.info.pMappedData) + i, &instance, sizeof(VkAccelerationStructureInstanceKHR));
   }
-  printf("completed fill instace of priors\n");
+
   tlas = createTLAS(m_device,m_vmaAllocator,tlasStagingBuffer,tlasInstanceBuffer,scene.draws.size(),tlasBuffer,asProps);
-  printf("made tlas\n");
+
   deletionQueue.push_back([&](){
       destroyBuffer(m_vmaAllocator, meshBuffer);
       destroyBuffer(m_vmaAllocator, matBuffer);
@@ -1664,16 +1526,6 @@ int main() {
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
 
   double elapsedTime = glfwGetTime();
-
-  printf("size of global: %zu\n",sizeof(globals));
-
-  for (size_t i = 0; i < scene.draws.size(); ++i) {
-      fprintf(stderr, "draw[%zu] mesh=%u mat=%u pos=(%.2f,%.2f,%.2f)\n",
-              i, scene.draws[i].meshIndex, scene.draws[i].materialIndex,
-              scene.draws[i].position.x, scene.draws[i].position.y,
-              scene.draws[i].position.z);
-  }
-  fflush(stderr);
 
   int frameIndex = 0;
   while (!glfwWindowShouldClose(window)) {

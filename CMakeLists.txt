@@ -40,13 +40,6 @@ target_link_libraries(Lycaon PRIVATE volk_headers)
 add_subdirectory(dependencies/meshoptimizer)
 target_link_libraries(Lycaon PRIVATE meshoptimizer)
 
-set(KTX_FEATURE_TESTS      OFF CACHE BOOL "" FORCE)
-set(KTX_FEATURE_TOOLS      OFF CACHE BOOL "" FORCE)
-set(KTX_FEATURE_STATIC_LIB OFF  CACHE BOOL "" FORCE)
-set(KTX_FEATURE_VK_UPLOAD  ON  CACHE BOOL "" FORCE)
-add_subdirectory(dependencies/KTX-Software)
-target_link_libraries(Lycaon PRIVATE ktx)
-
 set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_STATIC_LIB ON CACHE BOOL "" FORCE)

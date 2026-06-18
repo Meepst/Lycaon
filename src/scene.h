@@ -13,6 +13,8 @@ using glm::vec3;
 using glm::vec4;
 using glm::quat;
 
+enum class ColorSpace : uint8_t {Linear, Srgb};
+
 struct Vertex
 {
 	uint16_t vx, vy, vz;
@@ -135,6 +137,7 @@ struct Scene
 	std::vector<TextureInfo> textures;
 	std::vector<SamplerInfo> samplers;
 	std::vector<Light>       lights;
+	std::vector<ColorSpace> textureCSpaces;
 };
 
 

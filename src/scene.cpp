@@ -490,7 +490,6 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 
 } // anonymous namespace
 
-
 bool loadGltf(const std::string& filepath, Scene& scene,
               size_t maxVerticesPerMeshlet,
               size_t maxTrianglesPerMeshlet)
@@ -625,6 +624,15 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		return indexOf(tex.image, data->images, data->images_count);
 	};
 
+	auto markSrgb = [&](const cgltf_texture_view& view){
+	    if(!view.texture || !view.texture->image){
+			return;
+		}
+		size_t id = view.texture->image-data->images;
+		scene.textureCSpaces[id] = ColorSpace::Srgb;
+	};
+
+	scene.textureCSpaces.resize(data->images_count, ColorSpace::Linear);
 	scene.materials.resize(data->materials_count+1);
 	scene.materials[0].albedoTexture = -1;
 	scene.materials[0].normalTexture = -1;
@@ -650,6 +658,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 
 		if (src.has_pbr_metallic_roughness) {
 			const auto& pbr = src.pbr_metallic_roughness;
+			markSrgb(pbr.base_color_texture);
 
 			dst.diffuseFactor = vec4(
 				pbr.base_color_factor[0], pbr.base_color_factor[1],
@@ -665,6 +674,8 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 			dst.albedoTexture   = resolveTexture(pbr.base_color_texture);
 			dst.specularTexture = resolveTexture(pbr.metallic_roughness_texture);
 		}
+
+		markSrgb(src.emissive_texture);
 
 		dst.normalTexture   = resolveTexture(src.normal_texture);
 		dst.emissiveTexture = resolveTexture(src.emissive_texture);
