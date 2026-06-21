@@ -28,3 +28,6 @@
 [submodule "dependencies/bcdec"]
 	path = dependencies/bcdec
 	url = git@github.com:iOrange/bcdec.git
+[submodule "dependencies/fpng"]
+	path = dependencies/fpng
+	url = git@github.com:richgel999/fpng.git

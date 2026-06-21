@@ -20,8 +20,10 @@ set_target_properties(Lycaon PROPERTIES ENVIRONMENT "DISABLE_VULKAN_OBS_CAPTURE=
 
 target_compile_definitions(Lycaon PRIVATE GLFW_INCLUDE_VULKAN GLM_FORCE_XYZW_ONLY GLM_FORCE_QUAT_DATA_XYZW GLM_FORCE_QUAT_CTOR_XYZW GLM_FORCE_DEPTH_ZERO_TO_ONE)
 target_include_directories(Lycaon PRIVATE
-     dependencies/glm dependencies/cgltf dependencies/stb dependencies/bcdec "$ENV{VULKAN_SDK}/Include")
+     dependencies/glm dependencies/cgltf dependencies/fpng/src/ dependencies/stb dependencies/bcdec "$ENV{VULKAN_SDK}/Include")
 target_link_directories(Lycaon PRIVATE "$ENV{VULKAN_SDK}/Lib")
+
+target_sources(Lycaon PRIVATE dependencies/fpng/src/fpng.cpp)
 
 if(WIN32)
   target_compile_definitions(Lycaon PRIVATE GLFW_EXPOSE_NATIVE_WIN32)

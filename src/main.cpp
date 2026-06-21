@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <filesystem>
 
 #include <stb_image.h>
 #include "spirv_reflect.h"
@@ -15,7 +16,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/string_cast.hpp>
 #include <glm/gtc/type_ptr.hpp>
-
+#include "fpng.h"
 
 struct FrameDescriptors {
   VkDevice device;
@@ -64,6 +65,7 @@ struct Program{
 VkPhysicalDevice m_physicalDevice;
 VkDevice m_device;
 VmaAllocator m_vmaAllocator;
+bool needScreenshot = false;
 
 void drawBackground(VkCommandBuffer commandBuffer, VkImage image) {
   VkClearColorValue clearValue{};
@@ -843,9 +845,10 @@ glm::mat4 perspectiveProjection(float fovY, float aspectWbyH, float zNear)
 
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods){
     if(action == GLFW_PRESS){
-        if (key == GLFW_KEY_ESCAPE)
-		{
+        if (key == GLFW_KEY_ESCAPE){
 			glfwSetWindowShouldClose(window, true);
+		}else if(key == GLFW_KEY_F){
+            needScreenshot = true;
 		}
     }
 }
@@ -1016,6 +1019,151 @@ void buildAliasTable(const std::vector<float>& weights,std::vector<AliasEntry>& 
 
         out[s].probability = 1.f;
         out[s].alias = (uint32_t)s;
+    }
+}
+
+void saveScreenshot(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocator allocator,
+    VkQueue queue, VkCommandPool commandPool, VkImage srcImage, VkFormat format,
+    uint32_t width, uint32_t height, const char* path){
+    bool blit = true;
+    VkFormatProperties formprops;
+    vkGetPhysicalDeviceFormatProperties(physicalDevice,format,&formprops);
+
+    if(!(formprops.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)){
+        blit = false;
+    }
+
+    vkGetPhysicalDeviceFormatProperties(physicalDevice,VK_FORMAT_R8G8B8A8_UNORM,&formprops);
+    if(!(formprops.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)){
+        blit = false;
+    }
+
+    VkImageCreateInfo imgCreateInfo{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+    imgCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imgCreateInfo.extent = {width,height,1};
+    imgCreateInfo.arrayLayers = 1;
+    imgCreateInfo.mipLevels = 1;
+    imgCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imgCreateInfo.tiling = VK_IMAGE_TILING_LINEAR;
+    imgCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imgCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VkImage dstImage;
+    VmaAllocation dstAlloc;
+    VmaAllocationInfo dstAllocInfo;
+    VK_CHECK(vmaCreateImage(allocator,&imgCreateInfo,&allocInfo
+        ,&dstImage,&dstAlloc,&dstAllocInfo));
+
+    VkCommandBuffer commandBuffer = 0;
+    createCommandBuffer(device, commandPool, commandBuffer);
+
+    VkCommandBufferBeginInfo cmdBeginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    cmdBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer,&cmdBeginInfo);
+
+    auto barrier = [&](VkImage img, VkAccessFlags srcMask, VkAccessFlags dstMask,
+        VkImageLayout oldLayout, VkImageLayout newLayout){
+            VkImageMemoryBarrier barr{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            barr.srcAccessMask = srcMask;
+            barr.dstAccessMask = dstMask;
+            barr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barr.image = img;
+            barr.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+            barr.oldLayout = oldLayout;
+            barr.newLayout = newLayout;
+
+            vkCmdPipelineBarrier(commandBuffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barr);
+        };
+
+    barrier(dstImage,0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    barrier(srcImage,VK_ACCESS_MEMORY_READ_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    if(blit){
+        VkImageBlit region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.srcOffsets[1]  = {(int32_t)width, (int32_t)height, 1};
+        region.dstOffsets[1]  = {(int32_t)width, (int32_t)height, 1};
+
+        vkCmdBlitImage(commandBuffer,srcImage,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstImage,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region,VK_FILTER_NEAREST);
+    }else{
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.extent         = {width, height, 1};
+
+        vkCmdCopyImage(commandBuffer,srcImage,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstImage,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region);
+    }
+
+    barrier(dstImage, VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
+    barrier(srcImage,VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_MEMORY_READ_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo subInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    subInfo.commandBufferCount = 1;
+    subInfo.pCommandBuffers = &commandBuffer;
+
+    VK_CHECK(vkQueueSubmit(queue,1,&subInfo,VK_NULL_HANDLE));
+    vkQueueWaitIdle(queue);
+    vkFreeCommandBuffers(device,commandPool,1,&commandBuffer);
+
+    VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT,0,0};
+    VkSubresourceLayout layout;
+    vkGetImageSubresourceLayout(device,dstImage,&sub,&layout);
+
+    vmaInvalidateAllocation(allocator,dstAlloc,0,VK_WHOLE_SIZE);
+
+    const char* data = static_cast<const char*>(dstAllocInfo.pMappedData)+layout.offset;
+
+    bool swizzleBGR = !blit && (format == VK_FORMAT_B8G8R8A8_UNORM ||
+        format == VK_FORMAT_B8G8R8A8_SRGB);
+
+    const uint32_t channels = 3;
+    std::vector<uint8_t> pixels(size_t(width)*height*channels);
+
+    for(uint32_t y=0;y<height;y++){
+        const unsigned char* row =
+            reinterpret_cast<const unsigned char*>(data+y*layout.rowPitch);
+        uint8_t* out = pixels.data()+size_t(y)*width*channels;
+        for(uint32_t x=0;x<width;x++){
+            if(swizzleBGR){
+                out[0]=row[2];
+                out[1]=row[1];
+                out[2]=row[0];
+            }else{
+                out[0]=row[0];
+                out[1]=row[1];
+                out[2]=row[2];
+            }
+            row += 4;
+            out += channels;
+        }
+    }
+
+    vmaDestroyImage(allocator,dstImage,dstAlloc);
+
+    auto dir = std::filesystem::path(path).parent_path();
+    if(!dir.empty()){
+        std::filesystem::create_directories(dir);
+    }
+
+    if(!fpng::fpng_encode_image_to_file(path, pixels.data(), width, height, channels)){
+        assert(!"Failed to save screenshot");
     }
 }
 
@@ -1521,6 +1669,7 @@ int main() {
       }
   });
 
+  fpng::fpng_init();
 
   Image gbufferTargets[gbufferCount] = {};
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
@@ -1828,6 +1977,23 @@ int main() {
 
     VK_CHECK(vkQueueSubmit2(graphicsQueue, 1, &submitInfo,
                             renderFences[frameIndex]));
+
+
+    if(needScreenshot){
+        needScreenshot = false;
+        vkDeviceWaitIdle(m_device);
+
+        std::time_t t = std::time(nullptr);
+        char name[64];
+        std::strftime(name,sizeof(name),"screenshots/shot_%Y%m%d_%H%M%S.png",
+            std::localtime(&t));
+
+        saveScreenshot(m_device,m_physicalDevice,m_vmaAllocator,
+            graphicsQueue,commandPools[frameIndex],
+            swapchain.images[imageIndex],swapchainFormat,
+            swapchain.width,swapchain.height,
+            name);
+    }
 
     VkPresentInfoKHR presentInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfo.swapchainCount = 1;
