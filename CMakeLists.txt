@@ -130,7 +130,7 @@ foreach(HLSL ${HLSL_SOURCE_FILES})
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SPIRV_OUTPUT_DIR}"
         COMMAND ${DXC} -spirv -HV 2021 -Zi -Qembed_debug -fspv-extension=SPV_EXT_mesh_shader
         -fspv-extension=SPV_EXT_descriptor_indexing -fspv-debug=vulkan-with-source
-        -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-target-env=vulkan1.3
+        -fspv-extension=SPV_KHR_ray_query -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-target-env=vulkan1.3
         -T ${PROFILE} ${DXC_ENTRY_FLAG} ${HLSL} -Fo ${SPIRV}
         DEPENDS ${HLSL} ${HLSL_HEADER_FILES})
   list(APPEND SPIRV_BINARY_FILES ${SPIRV})

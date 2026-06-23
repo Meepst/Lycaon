@@ -101,6 +101,7 @@ StructuredBuffer<MeshDraw> Draws         : register(t5,space0);
 StructuredBuffer<Material> Materials     : register(t6,space0);
 StructuredBuffer<Light>    Lights        : register(t7,space0);
 StructuredBuffer<AliasEntry> AliasTable  : register(t8,space0);
+RaytracingAccelerationStructure SceneTLAS : register(t9,space0);
 
 Texture2D    Textures[]   : register(t0, space1);
 
@@ -165,11 +166,6 @@ float3 unpackTangentOct88(uint packed16)
 	return octDecode(float2(u, v));
 }
 
-float3 dequantizePosition(uint3 q, float3 center, float radius)
-{
-	return center + (float3(q) / 65535.0 * 2.0 - 1.0) * radius;
-}
-
 float2 dequantizeUV(uint2 q)
 {
 	return float2(f16tof32(q.x), f16tof32(q.y));
@@ -184,7 +180,7 @@ struct UnpackedVertex
 	float2 uv;
 };
 
-UnpackedVertex loadVertex(uint globalIndex, float3 meshCenter, float meshRadius)
+UnpackedVertex loadVertex(uint globalIndex)
 {
 	uint addr = globalIndex * 16;
 
@@ -194,7 +190,8 @@ UnpackedVertex loadVertex(uint globalIndex, float3 meshCenter, float meshRadius)
 	uint word3 = VertexBuffer.Load(addr + 12);
 
 	UnpackedVertex o;
-	o.position      = dequantizePosition(uint3(word0 & 0xFFFF, word0 >> 16, word1 & 0xFFFF), meshCenter, meshRadius);
+	o.position      = float3(f16tof32(word0&0xFFFF),
+	                        f16tof32(word0 >> 16),f16tof32(word1 & 0xFFFF));
 	o.normal        = unpackNormal1010102(word2);
 	o.tangent       = unpackTangentOct88(word1 >> 16);
 	o.bitangentSign = getBitangentSign(word2);

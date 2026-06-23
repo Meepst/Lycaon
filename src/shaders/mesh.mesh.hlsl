@@ -31,7 +31,7 @@ void main(
     {
         uint localIndex  = MeshletData[ml.dataOffset + gtid];
         uint globalIndex = ml.baseVertex + localIndex;
-        UnpackedVertex v = loadVertex(globalIndex, mesh.center, mesh.radius);
+        UnpackedVertex v = loadVertex(globalIndex);
         float3 worldPos     = draw.position + rotateByQuat(v.position * draw.scale, draw.orientation);
         float3 worldNormal  = normalize(rotateByQuat(v.normal/draw.scale,  draw.orientation));
         float3 worldTangent = normalize(rotateByQuat(v.tangent*draw.scale, draw.orientation));

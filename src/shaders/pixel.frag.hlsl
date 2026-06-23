@@ -70,6 +70,19 @@ float pointAttenuation(float dist, float range){
     return att;
 }
 
+float traceShadow(float3 pos, float3 N, float3 L, float maxDist){
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    RayDesc ray;
+    ray.Origin = pos+N*1e-3;
+    ray.Direction = L;
+    ray.TMin = 1e-3;
+    ray.TMax = maxDist - 2e-3;
+    query.TraceRayInline(SceneTLAS, RAY_FLAG_FORCE_OPAQUE| RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+        0xFF,ray);
+    query.Proceed();
+    return (query.CommittedStatus()==COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+
 LightSample evaluateLight(Light light, float3 pos){
     LightSample samp;
     samp.Lo = float3(0,0,0);
@@ -126,39 +139,7 @@ float3 evaluateBRDF(float3 N, float3 V, float3 L, float3 baseColor,
 
 PixelOutput main(VertexOutput input)
 {
-
-    // // Visualization: distance to nearest point light
-    // float minDist = 1e30;
-    // uint  closestIdx = 0;
-    // [loop]
-    // for (uint i = 0; i < lightCount; ++i)
-    // {
-    //     if (Lights[i].type == 1) continue;
-    //     float d = distance(Lights[i].position, input.worldPos);
-    //     if (d < minDist) { minDist = d; closestIdx = i; }
-    // }
-
-    // // If pixel is within 0.3 units of a light, color by light index
-    // if (minDist < 0.3)
-    // {
-    //     float h = float(closestIdx) / float(lightCount);
-    //     float3 c = float3(frac(h * 7.13), frac(h * 3.31), frac(h * 5.71));
-    //     PixelOutput debugOut;
-    //     debugOut.color = float4(c, 1.0);
-    //     return debugOut;
-    // }
-    // PixelOutput debugOutput;
-    // debugOutput.color = float4( frac(input.materialIndex * 0.1031),
-    //    frac(input.materialIndex * 0.0973),
-    //    frac(input.materialIndex * 0.1217),
-    //    1.0);
-    // return debugOutput;
-
-
     Material mat = Materials[input.materialIndex];
-    // debugOutput.color = float4(mat.diffuseFactor.rgb, 1.0);
-    // return debugOutput;
-    // Base color
 
     float4 baseColor = mat.diffuseFactor;
     if (mat.albedoTexture >= 0)
@@ -200,12 +181,25 @@ PixelOutput main(VertexOutput input)
     [loop]
     for(uint i=0;i<lightCount;i++){
         Light light = Lights[i];
-        LightSample samp = evaluateLight(light,input.worldPos);
+
         if(light.type == 1) continue;
+
+        LightSample samp = evaluateLight(light,input.worldPos);
+
         if(all(samp.Li==0.0)) continue;
 
+        float NdotL = dot(N,samp.Lo);
+        if(NdotL <= 0.0) continue;
+
         float3 brdf = evaluateBRDF(N,V,samp.Lo,baseColor.rgb,metallic,roughness);
-        color += brdf*samp.Li;
+
+        float3 unshadow = brdf*samp.Li;
+
+        if(max(max(unshadow.r,unshadow.g),unshadow.b)<1e-4) continue;
+
+        float shadow = traceShadow(input.worldPos,N,samp.Lo,samp.distance);
+
+        color += unshadow*shadow;
     }
 
     // Emissive
@@ -226,10 +220,6 @@ PixelOutput main(VertexOutput input)
     }
 
     PixelOutput output;
-    // output.albedo   = float4(baseColor.rgb, baseColor.a);
-    // output.normal   = float4(octEncode(N), 0.0, 0.0);  // BA reserved for motion or other
-    // output.material = float4(metallic, roughness, 0.0, float(input.materialIndex) / 255.0);
-    // output.emissive = float4(emissive, 0.0);
     output.color = float4(color,baseColor.a);
     return output;
 }

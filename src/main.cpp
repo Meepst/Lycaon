@@ -1255,6 +1255,9 @@ int main() {
   };
   maint5.maintenance5 = VK_TRUE;
 
+  VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  rqFeatures.rayQuery = VK_TRUE;
+
   rtFeatures.pNext = &accelFeatures;
   accelFeatures.pNext = &maint5;
   maint5.pNext = &features00;
@@ -1267,7 +1270,7 @@ int main() {
           .set_required_features(features00)
           .add_required_extensions({
               VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-              VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+              VK_KHR_RAY_QUERY_EXTENSION_NAME,
               VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
               VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
               VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME,
@@ -1278,6 +1281,7 @@ int main() {
           .add_required_extension_features(heapFeatures)
           .add_required_extension_features(meshFeatures)
           .add_required_extension_features(maint5)
+          .add_required_extension_features(rqFeatures)
           .set_surface(surface)
           .select()
           .value();
@@ -1595,6 +1599,7 @@ int main() {
   setDebugName(m_device, (uint64_t)lightBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"lightBuffer");
   setDebugName(m_device, (uint64_t)aliasTableBuffer.buffer,VK_OBJECT_TYPE_BUFFER,"aliasTableBuffer");
 
+
   std::array<UploadEntry, 10> uploads = {{
       { meshBuffer.buffer,       scene.meshes.data(),              scene.meshes.size() * sizeof(Mesh) },
       { matBuffer.buffer,        scene.materials.data(),           scene.materials.size() * sizeof(Material) },
@@ -1647,6 +1652,8 @@ int main() {
   }
 
   tlas = createTLAS(m_device,m_vmaAllocator,tlasStagingBuffer,tlasInstanceBuffer,scene.draws.size(),tlasBuffer,asProps);
+
+
 
   deletionQueue.push_back([&](){
       destroyBuffer(m_vmaAllocator, meshBuffer);
@@ -1779,6 +1786,23 @@ int main() {
 
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &cmdBufferBeginInfo));
 
+    if(tlasNeedsRebuild){
+        buildTlas(m_device,commandBuffer,tlas,tlasBuffer,tlasStagingBuffer,
+            tlasInstanceBuffer,scene.draws.size(),VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);
+
+        VkMemoryBarrier2 asBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        asBarrier.srcStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        asBarrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        asBarrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        asBarrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+        VkDependencyInfo asDep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        asDep.memoryBarrierCount = 1;
+        asDep.pMemoryBarriers    = &asBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &asDep);
+
+        tlasNeedsRebuild = false;
+    }
 
     globals.cameraPos = cam.position;
 
@@ -1938,7 +1962,7 @@ int main() {
 		push.meshletCount = lod.meshletCount;
 
 		DescriptorInfo descriptors[] = {globalBuffer,vertBuffer,meshletDataBuffer
-		,meshletBuffer,meshBuffer,drawBuffer,matBuffer,lightBuffer,aliasTableBuffer};
+		,meshletBuffer,meshBuffer,drawBuffer,matBuffer,lightBuffer,aliasTableBuffer,tlas};
 
 		pushDescriptorsAndConstants(commandBuffer, frameDesc, graphicsProgram,
                             descriptors, push);

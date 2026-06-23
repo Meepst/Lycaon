@@ -301,9 +301,9 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 	for (size_t v = 0; v < vertCount; ++v) {
 		Vertex& vtx = r.vertices[v];
 
-		vtx.vx = quantizePosition(optPositions[v * 3 + 0], meshCenter.x, meshRadius);
-		vtx.vy = quantizePosition(optPositions[v * 3 + 1], meshCenter.y, meshRadius);
-		vtx.vz = quantizePosition(optPositions[v * 3 + 2], meshCenter.z, meshRadius);
+		vtx.vx = meshopt_quantizeHalf(optPositions[v * 3 + 0]);
+		vtx.vy = meshopt_quantizeHalf(optPositions[v * 3 + 1]);
+		vtx.vz = meshopt_quantizeHalf(optPositions[v * 3 + 2]);
 
 		float nx = optNormals[v * 3 + 0];
 		float ny = optNormals[v * 3 + 1];
