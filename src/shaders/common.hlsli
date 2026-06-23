@@ -108,6 +108,12 @@ Texture2D    Textures[]   : register(t0, space1);
 SamplerState LinearWrap   : register(s0,space2);
 SamplerState LinearClamp  : register(s1,space2);
 
+Texture2D<float> GBufferDepth : register(t0,space3);
+Texture2D<float4> GBuffer0 : register(t1,space3);
+Texture2D<float4> GBuffer1 : register(t2,space3);
+Texture2D<float4> GBuffer2 : register(t3,space3);
+RWTexture2D<float4> OutputImage : register(u0,space3);
+
 // Globals accessor — keeps shader code clean
 static Globals globals_ = GlobalsBuf[0];
 #define viewProj     globals_.viewProj

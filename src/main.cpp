@@ -10,6 +10,10 @@
 #include <iostream>
 #include <filesystem>
 
+#if defined(_WIN32)
+    #include <windows.h>
+#endif
+
 #include <stb_image.h>
 #include "spirv_reflect.h"
 #include "texture.h"
@@ -974,12 +978,12 @@ void buildAliasTable(const std::vector<float>& weights,std::vector<AliasEntry>& 
         probs[i] = (weights[i]*n)/sum;
     }
 
-    std::vector<size_t> small;
-    std::vector<size_t> large;
-    small.reserve(n);
-    large.reserve(n);
+    std::vector<size_t> sm;
+    std::vector<size_t> lg;
+    sm.reserve(n);
+    lg.reserve(n);
     for(size_t i=0;i<n;i++){
-        (probs[i]<1.f ? small : large).push_back(i);
+        (probs[i]<1.f ? sm : lg).push_back(i);
     }
 
     out.resize(n);
@@ -987,11 +991,11 @@ void buildAliasTable(const std::vector<float>& weights,std::vector<AliasEntry>& 
         out[i].pdf = weights[i]/sum;
     }
 
-    while(!small.empty()&&!large.empty()){
-        size_t s = small.back();
-        small.pop_back();
-        size_t l = large.back();
-        large.pop_back();
+    while(!sm.empty()&&!lg.empty()){
+        size_t s = sm.back();
+        sm.pop_back();
+        size_t l = lg.back();
+        lg.pop_back();
 
         out[s].probability = probs[s];
         out[s].alias = (uint32_t)l;
@@ -999,23 +1003,23 @@ void buildAliasTable(const std::vector<float>& weights,std::vector<AliasEntry>& 
         probs[l] = (probs[l]+probs[s])-1.f;
 
         if(probs[l]<1.f){
-            small.push_back(l);
+            sm.push_back(l);
         }else{
-            large.push_back(l);
+            lg.push_back(l);
         }
     }
 
-    while(!large.empty()){
-        size_t l = large.back();
-        large.pop_back();
+    while(!lg.empty()){
+        size_t l = lg.back();
+        lg.pop_back();
 
         out[l].probability = 1.f;
         out[l].alias = (uint32_t)l;
     }
 
-    while(!small.empty()){
-        size_t s = small.back();
-        small.pop_back();
+    while(!sm.empty()){
+        size_t s = sm.back();
+        sm.pop_back();
 
         out[s].probability = 1.f;
         out[s].alias = (uint32_t)s;
@@ -1391,32 +1395,47 @@ int main() {
   VkCommandBuffer initCommandBuffer = 0;
   createCommandBuffer(m_device, initCommandPool, initCommandBuffer);
 
-  auto task_spv = load_spirv("build/debug/spirv/task.task.spv");
+  std::filesystem::path applicationDir;
+
+  #if defined(_WIN32)
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr,buf,MAX_PATH);
+    applicationDir = std::filesystem::path(std::wstring(buf,len)).parent_path();
+  #else
+    abort(!"Currently only supports windows");
+  #endif
+
+  auto task_spv = load_spirv((applicationDir/"spirv/task.task.spv").string().c_str());
 
   if(task_spv.empty()){
       fprintf(stderr, "  Failed to load\n\n");
   }
 
-  auto vert_spv = load_spirv("build/Debug/spirv/mesh.mesh.spv");
+  auto vert_spv = load_spirv((applicationDir/"spirv/mesh.mesh.spv").string().c_str());
 
   if (vert_spv.empty()) {
     fprintf(stderr, "  Failed to load\n\n");
   }
 
-  auto frag_spv = load_spirv("build/Debug/spirv/pixel.frag.spv");
+  auto frag_spv = load_spirv((applicationDir/"spirv/pixel.frag.spv").string().c_str());
 
   if (frag_spv.empty()) {
     fprintf(stderr, "  Failed to load\n\n");
   }
 
+  auto shading_spv = load_spirv((applicationDir/"spirv/shading.comp.spv").string().c_str());
+
+  if(shading_spv.empty()){
+      fprintf(stderr, "  Failed to load\n\n");
+  }
+
   VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
 
-  static const size_t gbufferCount = 4;
+  static const size_t gbufferCount = 3;
   const VkFormat gbufferFormats[gbufferCount] = {
-      VK_FORMAT_R8G8B8A8_UNORM,
-      VK_FORMAT_R16G16B16A16_SFLOAT,
-      VK_FORMAT_R8G8B8A8_UNORM,
-      VK_FORMAT_R16G16B16A16_SFLOAT,
+      VK_FORMAT_R8G8B8A8_SRGB, // rgb=albedo and a=metallic
+      VK_FORMAT_A2B10G10R10_UNORM_PACK32, // rg=uv b=roughness a=matFlag
+      VK_FORMAT_B10G11R11_UFLOAT_PACK32, // rgb = emissive
   };
 
   SpvReflectShaderModule taskModule;
@@ -1431,21 +1450,19 @@ int main() {
   refResult = spvReflectCreateShaderModule(frag_spv.size()*sizeof(uint32_t), frag_spv.data(), &fragModule);
   assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
 
+  SpvReflectShaderModule shadingModule;
+  refResult = spvReflectCreateShaderModule(shading_spv.size()*sizeof(uint32_t), shading_spv.data(), &shadingModule);
+  assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
+
   VkPipelineRenderingCreateInfo gbufferInfo = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
   gbufferInfo.colorAttachmentCount = gbufferCount;
   gbufferInfo.pColorAttachmentFormats = gbufferFormats;
   gbufferInfo.depthAttachmentFormat = depthFormat;
 
-
-  VkPipelineRenderingCreateInfo tempInfo{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
-  tempInfo.colorAttachmentCount = 1;
-  tempInfo.depthAttachmentFormat = depthFormat;
-  tempInfo.pColorAttachmentFormats = &swapchainFormat;
-
   VkPipelineCache pipelineCache = 0;
 
   Program graphicsProgram = createProgram(m_device, {&taskModule,&vertModule,&fragModule}, resourceDescriptorSize, sizeof(TaskConstants));
-  graphicsProgram.pipeline = createGraphicsPipeline(m_device, pipelineCache, tempInfo, graphicsProgram, {&taskModule,&vertModule,&fragModule});
+  graphicsProgram.pipeline = createGraphicsPipeline(m_device, pipelineCache, gbufferInfo, graphicsProgram, {&taskModule,&vertModule,&fragModule});
 
 
   spvReflectDestroyShaderModule(&taskModule);
@@ -1876,44 +1893,24 @@ int main() {
 	vkCmdBindSamplerHeapEXT(commandBuffer, &bindSamplerHeap);
 	vkCmdBindResourceHeapEXT(commandBuffer, &bindResourceHeap);
 
-	// batchBarrier(commandBuffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
- //        {gbufferTargets[0].image,gbufferTargets[1].image},{depthTarget.image});
     transitionImage(commandBuffer,depthTarget.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-	transitionImage(commandBuffer, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	// transitionImage(commandBuffer, gbufferTargets[0].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	// transitionImage(commandBuffer, gbufferTargets[1].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	// transitionImage(commandBuffer, gbufferTargets[2].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	// transitionImage(commandBuffer, gbufferTargets[3].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	transitionImage(commandBuffer, gbufferTargets[0].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, gbufferTargets[1].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, gbufferTargets[2].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	VkClearColorValue colorClear = { 135.f / 255.f, 206.f / 255.f, 250.f / 255.f, 15.f / 255.f };
 	VkClearDepthStencilValue depthClear = { 0.f, 0 };
 
- //    VkRenderingAttachmentInfo gbufferAttachments[gbufferCount] = {};
-	// for (uint32_t i = 0; i < gbufferCount; ++i){
-	// 	gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	// 	gbufferAttachments[i].imageView = gbufferTargets[i].imageView;
-	// 	gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	// 	gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-	// 	gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	// 	gbufferAttachments[i].clearValue.color = colorClear;
-	// }
-
-	VkRenderingAttachmentInfo colorAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-    colorAttachment.imageView   = swapchain.imageViews[imageIndex];
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue.color = colorClear;
-
-  //   VkRenderingAttachmentInfo gbufferAttachments[gbufferCount] = {};
-  //   for(uint32_t i=0;i<gbufferCount;i++){
-  //      	gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-		// gbufferAttachments[i].imageView = gbufferTargets[i].imageView;
-		// gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		// gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		// gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		// gbufferAttachments[i].clearValue.color = colorClear;
-  //   }
+    VkRenderingAttachmentInfo gbufferAttachments[gbufferCount] = {};
+	for (uint32_t i = 0; i < gbufferCount; ++i){
+		gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+		gbufferAttachments[i].imageView = gbufferTargets[i].imageView;
+		gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		gbufferAttachments[i].clearValue.color = colorClear;
+	}
 
 	VkRenderingAttachmentInfo depthAttachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
 	depthAttachment.imageView = depthTarget.imageView;
@@ -1926,8 +1923,8 @@ int main() {
 	passInfo.renderArea.extent.width = swapchain.width;
 	passInfo.renderArea.extent.height = swapchain.height;
 	passInfo.layerCount = 1;
-	passInfo.colorAttachmentCount = 1;
-	passInfo.pColorAttachments = &colorAttachment;
+	passInfo.colorAttachmentCount = gbufferCount;
+	passInfo.pColorAttachments = gbufferAttachments;
 	passInfo.pDepthAttachment = &depthAttachment;
 
 	vkCmdBeginRendering(commandBuffer, &passInfo);
@@ -1979,8 +1976,8 @@ int main() {
  //    VK_IMAGE_LAYOUT_GENERAL,
  //    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	transitionImage(commandBuffer, swapchain.images[imageIndex],
-	VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    	VK_IMAGE_LAYOUT_GENERAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 	// copyImageToImage(commandBuffer, gbufferTargets[0].image,
  //    swapchain.images[imageIndex],
