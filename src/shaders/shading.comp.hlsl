@@ -135,6 +135,45 @@ float3 worldFromDepth(float2 uv, float depth){
     return world.xyz / world.w;
 }
 
+float3 linearToSrgb(float3 c){
+    float3 lo = c*12.92;
+    float3 hi = 1.055*pow(c,1.0/2.4)-0.055;
+    return lerp(hi,lo,step(c,0.0031308));
+}
+
+uint hashSeed(uint2 px, uint frame){
+    uint h = px.x * 73856093u ^ px.y * 19349663u ^ frame * 83492791u;
+    return h;
+}
+
+float2 hash2(uint s) {
+    s ^= s >> 16; s *= 0x7feb352du; s ^= s >> 15;
+    uint t = s * 0x846ca68bu; t ^= t >> 16;
+    return float2(s & 0xffff, t & 0xffff) / 65535.0;
+}
+
+float3 sampleCone(float3 Lo, float cosMax, float2 u){
+    float cosT = lerp(1.0, cosMax, u.x);
+    float sinT = sqrt(saturate(1.0 - cosT * cosT));
+    float phi  = 6.2831853 * u.y;
+    float3 up  = abs(Lo.y) < 0.99 ? float3(0,1,0) : float3(1,0,0);
+    float3 t   = normalize(cross(up, Lo));
+    float3 b   = cross(Lo, t);
+    return normalize(Lo * cosT + (t * cos(phi) + b * sin(phi)) * sinT);
+}
+
+float traceSoftShadow(float3 p, float3 N, float3 Lo,float distL,
+    float coneCosMax, uint seed){
+    const uint M = 8;
+    float vis = 0.0;
+    for(uint s=0;s<M;s++){
+        float2 u = hash2(seed+s);
+        float3 dir = sampleCone(Lo,coneCosMax,u);
+        vis += traceShadow(p,N,dir,distL);
+    }
+    return vis/M;
+}
+
 [numthreads(8,8,1)]
 void main(uint3 dtid : SV_DispatchThreadID){
     uint2 px = dtid.xy;
@@ -142,7 +181,7 @@ void main(uint3 dtid : SV_DispatchThreadID){
     OutputImage.GetDimensions(w,h);
 
     float depth = GBufferDepth.Load(int3(px,0));
-    if(depth >= 1.0){
+    if(depth == 0){
         OutputImage[px] = float4(0.f,0.f,0.f,1.f);
         return;
     }
@@ -176,14 +215,19 @@ void main(uint3 dtid : SV_DispatchThreadID){
         float3 unshadow = brdf*s.Li;
         if(max(max(unshadow.r,unshadow.g),unshadow.b)<1e-4) continue;
 
-        float shadow = traceShadow(p,N,s.Lo,s.distance);
+        float coneCosMax = rsqrt(1.0+(light.radius/s.distance)*(light.radius/s.distance));
+
+        uint seed = hashSeed(px,dtid.y);
+
+        float shadow = traceSoftShadow(p,N,s.Lo,s.distance,
+        coneCosMax,seed);
         color += unshadow*shadow;
     }
 
     color += emissive;
     color += albedo*0.03;
     color = ACESFilm(color);
-    color = pow(color,1.0/2.2);
+    color = linearToSrgb(color);
 
     OutputImage[px] = float4(color,1.0);
 }

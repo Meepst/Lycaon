@@ -743,6 +743,8 @@ uint32_t pushDescriptorHeap(FrameDescriptors& framedesc, const Program& program,
 
 			case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
 			{
+                // printf("AS branch: binding=%d  info.accelerationStructure=%p\n",
+                //         i, (void*)info.accelerationStructure);
 				VkAccelerationStructureDeviceAddressInfoKHR addressInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
 				addressInfo.accelerationStructure = info.accelerationStructure;
 				VkDeviceAddress address = vkGetAccelerationStructureDeviceAddressKHR(framedesc.device, &addressInfo);
@@ -758,45 +760,6 @@ uint32_t pushDescriptorHeap(FrameDescriptors& framedesc, const Program& program,
 		}
 
 	return result;
-}
-
-template<size_t PushDescriptors>
-void pushDescriptors(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc, const Program& program, const DescriptorInfo (&descriptors)[PushDescriptors])
-{
-	uint32_t descriptorOffset = pushDescriptorHeap(framedesc, program, descriptors);
-
-	VkPushDataInfoEXT pushDataInfo = { VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT };
-	pushDataInfo.offset = program.pushConstantSize;
-	pushDataInfo.data.address = &descriptorOffset;
-	pushDataInfo.data.size = sizeof(descriptorOffset);
-
-	vkCmdPushDataEXT(commandBuffer, &pushDataInfo);
-}
-
-void pushConstants(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc, const Program& program, const TaskConstants& constants)
-{
-    char pushData[256] = {};
-
-        // Copy TaskConstants into the beginning
-        memcpy(pushData, &constants, sizeof(constants));
-
-        // Indices start at pushConstantSize (byte 32), NOT sizeof(TaskConstants) (byte 16)
-        uint32_t* indices = (uint32_t*)(pushData + program.pushConstantSize);
-        for (uint32_t i = 0; i < program.descriptorCount; i++)
-            indices[i] = framedesc.descriptorOffset + i;
-
-        uint32_t totalSize = program.pushConstantSize
-            + program.descriptorCount * sizeof(uint32_t);
-
-        for (uint32_t i = 0; i < program.descriptorCount; i++)
-            printf("  index[%d] = %d\n", i, indices[i]);
-
-        VkPushDataInfoEXT pushDataInfo = { VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT };
-        pushDataInfo.offset = 0;
-        pushDataInfo.data.address = pushData;
-        pushDataInfo.data.size = totalSize;
-
-        vkCmdPushDataEXT(commandBuffer, &pushDataInfo);
 }
 
 template<size_t PushDescriptors>
@@ -902,6 +865,8 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineCache pipelineCache,
 	extraFlags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
     createInfo.pNext = &extraFlags;
 
+    extraFlags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+
     VkShaderDescriptorSetAndBindingMappingInfoEXT heapMapping = {};
 	VkDescriptorSetAndBindingMappingEXT heapMappingTable[34] = {};
 
@@ -924,7 +889,7 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineCache pipelineCache,
 	stage.stage = static_cast<VkShaderStageFlagBits>(module->shader_stage);
 	stage.pName = "main";
 	stage.pSpecializationInfo = nullptr;
-	stage.pNext = &module;
+	stage.pNext = &mod;
 
 	createInfo.stage = stage;
 	createInfo.layout = VK_NULL_HANDLE;
@@ -1302,6 +1267,11 @@ int main() {
 
   VkFormat swapchainFormat = getSwapchainFormat(m_physicalDevice, surface);
 
+  swapchainBuilder.set_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+      VK_IMAGE_USAGE_STORAGE_BIT);
+
   Swapchain swapchain{};
   createSwapchain(swapchain, swapchainFormat, window, swapchainBuilder, {});
 
@@ -1408,25 +1378,25 @@ int main() {
   auto task_spv = load_spirv((applicationDir/"spirv/task.task.spv").string().c_str());
 
   if(task_spv.empty()){
-      fprintf(stderr, "  Failed to load\n\n");
+      printf("Failed to load: %s\n",(applicationDir/"spirv/task.task.spv").string().c_str());
   }
 
   auto vert_spv = load_spirv((applicationDir/"spirv/mesh.mesh.spv").string().c_str());
 
   if (vert_spv.empty()) {
-    fprintf(stderr, "  Failed to load\n\n");
+      printf("Failed to load: %s\n",(applicationDir/"spirv/mesh.mesh.spv").string().c_str());
   }
 
   auto frag_spv = load_spirv((applicationDir/"spirv/pixel.frag.spv").string().c_str());
 
   if (frag_spv.empty()) {
-    fprintf(stderr, "  Failed to load\n\n");
+    printf("Failed to load: %s\n",(applicationDir/"spirv/pixel.frag.spv").string().c_str());
   }
 
   auto shading_spv = load_spirv((applicationDir/"spirv/shading.comp.spv").string().c_str());
 
   if(shading_spv.empty()){
-      fprintf(stderr, "  Failed to load\n\n");
+      printf("Failted to load: %s\n",(applicationDir/"spirv/shading.comp.spv").string().c_str());
   }
 
   VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
@@ -1464,13 +1434,20 @@ int main() {
   Program graphicsProgram = createProgram(m_device, {&taskModule,&vertModule,&fragModule}, resourceDescriptorSize, sizeof(TaskConstants));
   graphicsProgram.pipeline = createGraphicsPipeline(m_device, pipelineCache, gbufferInfo, graphicsProgram, {&taskModule,&vertModule,&fragModule});
 
+  Program shadingProgram = createProgram(m_device,{&shadingModule},resourceDescriptorSize,0);
+  shadingProgram.pipeline = createComputePipeline(m_device, pipelineCache, shadingProgram, &shadingModule);
 
   spvReflectDestroyShaderModule(&taskModule);
   spvReflectDestroyShaderModule(&vertModule);
   spvReflectDestroyShaderModule(&fragModule);
+  spvReflectDestroyShaderModule(&shadingModule);
 
   deletionQueue.push_back(
-      [&]() { vkDestroyPipeline(m_device, graphicsProgram.pipeline, nullptr);});
+      [&]() { vkDestroyPipeline(m_device, graphicsProgram.pipeline, nullptr);}
+  );
+  deletionQueue.push_back(
+      [&](){vkDestroyPipeline(m_device,shadingProgram.pipeline,nullptr);}
+  );
 
   deletionQueue.push_back(
       [&]() { vkDestroyCommandPool(m_device, initCommandPool, nullptr); });
@@ -1695,7 +1672,7 @@ int main() {
 
   fpng::fpng_init();
 
-  Image gbufferTargets[gbufferCount] = {};
+  Image gbufferTargets[FRAMES_IN_FLIGHT][gbufferCount] = {};
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
 
   double elapsedTime = glfwGetTime();
@@ -1735,10 +1712,11 @@ int main() {
 
     if (swapchainStatus == Swapchain_Resized || !depthTargets[0].image) {
       printf("Swapchain resized: %dx%d\n", swapchain.width, swapchain.height);
-
-      for(Image& img : gbufferTargets){
-          if(img.image){
-              destroyImage(m_device, m_vmaAllocator, img);
+      for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
+          for(Image& img : gbufferTargets[i]){
+              if(img.image){
+                  destroyImage(m_device, m_vmaAllocator, img);
+              }
           }
       }
 
@@ -1747,14 +1725,16 @@ int main() {
             destroyImage(m_device,m_vmaAllocator,img);
         }
 
-      for(size_t i=0;i<gbufferCount;i++){
-          gbufferTargets[i] = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),
-              gbufferFormats[i],VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,false);
+      for(size_t j=0;j<FRAMES_IN_FLIGHT;j++){
+          for(size_t i=0;i<gbufferCount;i++){
+              gbufferTargets[j][i] = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),
+                  gbufferFormats[i],VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,false);
+          }
       }
-      for(Image& img : depthTargets)
-        img = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),depthFormat,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, false);
 
+      for(Image& img : depthTargets)
+          img = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),depthFormat,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, false);
 
       for(uint32_t i = 0;i<swapchain.imageViews.size();i++){
           if(swapchain.imageViews[i]){
@@ -1810,7 +1790,7 @@ int main() {
         VkMemoryBarrier2 asBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         asBarrier.srcStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
         asBarrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        asBarrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        asBarrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         asBarrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 
         VkDependencyInfo asDep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
@@ -1866,7 +1846,8 @@ int main() {
     postBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     postBarrier.dstStageMask  = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT
                               | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT
-                              | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                              | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                              | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     postBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     postBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     postBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1894,10 +1875,9 @@ int main() {
 	vkCmdBindResourceHeapEXT(commandBuffer, &bindResourceHeap);
 
     transitionImage(commandBuffer,depthTarget.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-	transitionImage(commandBuffer, swapchain.images[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-	transitionImage(commandBuffer, gbufferTargets[0].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	transitionImage(commandBuffer, gbufferTargets[1].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	transitionImage(commandBuffer, gbufferTargets[2].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, gbufferTargets[frameIndex][0].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, gbufferTargets[frameIndex][1].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	transitionImage(commandBuffer, gbufferTargets[frameIndex][2].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 	VkClearColorValue colorClear = { 135.f / 255.f, 206.f / 255.f, 250.f / 255.f, 15.f / 255.f };
 	VkClearDepthStencilValue depthClear = { 0.f, 0 };
@@ -1905,7 +1885,7 @@ int main() {
     VkRenderingAttachmentInfo gbufferAttachments[gbufferCount] = {};
 	for (uint32_t i = 0; i < gbufferCount; ++i){
 		gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-		gbufferAttachments[i].imageView = gbufferTargets[i].imageView;
+		gbufferAttachments[i].imageView = gbufferTargets[frameIndex][i].imageView;
 		gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 		gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1959,7 +1939,7 @@ int main() {
 		push.meshletCount = lod.meshletCount;
 
 		DescriptorInfo descriptors[] = {globalBuffer,vertBuffer,meshletDataBuffer
-		,meshletBuffer,meshBuffer,drawBuffer,matBuffer,lightBuffer,aliasTableBuffer,tlas};
+		,meshletBuffer,meshBuffer,drawBuffer,matBuffer};
 
 		pushDescriptorsAndConstants(commandBuffer, frameDesc, graphicsProgram,
                             descriptors, push);
@@ -1972,17 +1952,77 @@ int main() {
 
 	vkCmdEndRendering(commandBuffer);
 
-	// transitionImage(commandBuffer, gbufferTargets[0].image,
- //    VK_IMAGE_LAYOUT_GENERAL,
- //    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	VkImageMemoryBarrier2 toRead[5];
+	for(int i=0;i<gbufferCount;i++){
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+		memBar.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+		memBar.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		memBar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		memBar.image = gbufferTargets[frameIndex][i].image;
+		memBar.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		toRead[i] = memBar;
+	}
+
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+		memBar.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+		memBar.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		memBar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		memBar.image = depthTarget.image;
+		memBar.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+
+		toRead[3] = memBar;
+	}
+
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		memBar.srcAccessMask = 0;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+		memBar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		memBar.image = swapchain.images[imageIndex];
+		memBar.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		toRead[4] = memBar;
+	}
+
+	VkDependencyInfo shadingDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+	shadingDep.imageMemoryBarrierCount = 5;
+	shadingDep.pImageMemoryBarriers = toRead;
+	vkCmdPipelineBarrier2(commandBuffer,&shadingDep);
+
+	vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,shadingProgram.pipeline);
+
+	DescriptorInfo shadingDescriptors[32] = {};
+	shadingDescriptors[0]  = globalBuffer;                  // GlobalsBuf
+    shadingDescriptors[7]  = lightBuffer;                   // Lights
+    shadingDescriptors[9]  = tlas;                          // SceneTLAS
+    shadingDescriptors[10] = depthTarget;                   // GBufferDepth
+    shadingDescriptors[11] = gbufferTargets[frameIndex][0]; // GBuffer0
+    shadingDescriptors[12] = gbufferTargets[frameIndex][1]; // GBuffer1
+    shadingDescriptors[13] = gbufferTargets[frameIndex][2]; // GBuffer2
+    shadingDescriptors[14] = Image{.image=swapchain.images[imageIndex],
+        .imageView=swapchain.imageViews[imageIndex],.imageExtent=VkExtent3D(swapchain.width,
+            swapchain.height,1),.imageFormat=swapchainFormat};
+
+	pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,{});
+
+	uint32_t groupsX = (swapchain.width+7)/8;
+	uint32_t groupsY = (swapchain.height+7)/8;
+	vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
+
 	transitionImage(commandBuffer, swapchain.images[imageIndex],
     	VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-	// copyImageToImage(commandBuffer, gbufferTargets[0].image,
- //    swapchain.images[imageIndex],
- //    VkExtent2D(swapchain.width, swapchain.height),
- //    VkExtent2D(swapchain.width, swapchain.height));
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
@@ -2030,11 +2070,14 @@ int main() {
 
   vkDeviceWaitIdle(m_device);
 
-  for (Image& image : gbufferTargets) {
-    if (image.image){
-        destroyImage(m_device, m_vmaAllocator, image);
+  for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
+    for (Image& image : gbufferTargets[i]) {
+        if (image.image){
+            destroyImage(m_device, m_vmaAllocator, image);
+        }
     }
   }
+
   for(Image& img : depthTargets)
     if (img.image)
         destroyImage(m_device, m_vmaAllocator, img);

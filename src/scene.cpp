@@ -591,6 +591,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		newLight.spotCosOuter = spotCosOuter;
 		newLight.spotCosInner = spotCosInner;
 		newLight.direction = direction;
+		newLight.radius = 0.13;
 
 		scene.lights.push_back(newLight);
 	}

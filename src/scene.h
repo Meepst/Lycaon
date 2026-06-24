@@ -123,7 +123,7 @@ struct Light{
     float  spotCosInner;
     float   spotCosOuter;
     float   range;
-    float   _pad0;
+    float   radius;
     float   _pad1;
 };
 
