@@ -38,6 +38,11 @@ struct alignas(16) TaskConstants
 	uint32_t _pad;
 };
 
+struct Frame{
+    uint32_t count;
+    uint32_t resetHistory;
+};
+
 struct alignas(64) Globals{
     glm::mat4 viewProj;
     glm::mat4 view;
@@ -762,11 +767,10 @@ uint32_t pushDescriptorHeap(FrameDescriptors& framedesc, const Program& program,
 	return result;
 }
 
-template<size_t PushDescriptors>
+template<typename PushConstants, size_t PushDescriptors>
 void pushDescriptorsAndConstants(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc,
                                   const Program& program, const DescriptorInfo (&descriptors)[PushDescriptors],
-                                  const TaskConstants& constants)
-{
+                                  const PushConstants& constants){
     // Write descriptor data into the heap
     uint32_t baseOffset = pushDescriptorHeap(framedesc, program, descriptors);
 
@@ -1434,7 +1438,7 @@ int main() {
   Program graphicsProgram = createProgram(m_device, {&taskModule,&vertModule,&fragModule}, resourceDescriptorSize, sizeof(TaskConstants));
   graphicsProgram.pipeline = createGraphicsPipeline(m_device, pipelineCache, gbufferInfo, graphicsProgram, {&taskModule,&vertModule,&fragModule});
 
-  Program shadingProgram = createProgram(m_device,{&shadingModule},resourceDescriptorSize,0);
+  Program shadingProgram = createProgram(m_device,{&shadingModule},resourceDescriptorSize,sizeof(Frame));
   shadingProgram.pipeline = createComputePipeline(m_device, pipelineCache, shadingProgram, &shadingModule);
 
   spvReflectDestroyShaderModule(&taskModule);
@@ -1674,9 +1678,14 @@ int main() {
 
   Image gbufferTargets[FRAMES_IN_FLIGHT][gbufferCount] = {};
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
+  Image accumTargets[FRAMES_IN_FLIGHT] = {};
 
   double elapsedTime = glfwGetTime();
 
+  Frame frameInfo = {};
+
+  frameInfo.count = 0;
+  frameInfo.resetHistory = 0;
   int frameIndex = 0;
   while (!glfwWindowShouldClose(window)) {
     double currTime = glfwGetTime();
@@ -1702,6 +1711,8 @@ int main() {
 		cam.orientation = glm::rotate(glm::quat(0, 0, 0, 1), float(-cameraRotation.y * dt * cameraRotationSpeed), cam.orientation * vec3(1, 0, 0)) * cam.orientation;
 
 		glfwSetCursorPos(window,0,0);
+
+		frameInfo.resetHistory = 1;
     }
 
     SwapchainStatus swapchainStatus = updateSwapchain(
@@ -1720,6 +1731,14 @@ int main() {
           }
       }
 
+      for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
+          for(Image& img : accumTargets){
+              if(img.image){
+                  destroyImage(m_device,m_vmaAllocator,img);
+              }
+          }
+      }
+
       for(Image& img : depthTargets)
         if(img.image){
             destroyImage(m_device,m_vmaAllocator,img);
@@ -1730,6 +1749,12 @@ int main() {
               gbufferTargets[j][i] = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),
                   gbufferFormats[i],VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,false);
           }
+      }
+
+      for(Image& img : accumTargets){
+          img = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),VK_FORMAT_R32G32B32A32_SFLOAT,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+              | VK_IMAGE_USAGE_STORAGE_BIT,false);
       }
 
       for(Image& img : depthTargets)
@@ -1952,7 +1977,7 @@ int main() {
 
 	vkCmdEndRendering(commandBuffer);
 
-	VkImageMemoryBarrier2 toRead[5];
+	VkImageMemoryBarrier2 toRead[6];
 	for(int i=0;i<gbufferCount;i++){
 	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
 		memBar.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1995,17 +2020,37 @@ int main() {
 		toRead[4] = memBar;
 	}
 
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		memBar.srcAccessMask = 0;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+		memBar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		memBar.image = accumTargets[frameIndex].image;
+		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+
+		toRead[5] = memBar;
+	}
+
 	VkDependencyInfo shadingDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-	shadingDep.imageMemoryBarrierCount = 5;
+	shadingDep.imageMemoryBarrierCount = 6;
 	shadingDep.pImageMemoryBarriers = toRead;
 	vkCmdPipelineBarrier2(commandBuffer,&shadingDep);
 
 	vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,shadingProgram.pipeline);
 
 	DescriptorInfo shadingDescriptors[32] = {};
-	shadingDescriptors[0]  = globalBuffer;                  // GlobalsBuf
-    shadingDescriptors[7]  = lightBuffer;                   // Lights
-    shadingDescriptors[9]  = tlas;                          // SceneTLAS
+	shadingDescriptors[0] = globalBuffer;                  // GlobalsBuf
+	shadingDescriptors[1] = vertBuffer;
+	shadingDescriptors[2] = meshletDataBuffer;
+	shadingDescriptors[3] = meshletBuffer;
+	shadingDescriptors[4] = meshBuffer;
+	shadingDescriptors[5] = drawBuffer;
+    shadingDescriptors[6] = matBuffer;
+    shadingDescriptors[7] = lightBuffer;
+    shadingDescriptors[9] = tlas;
     shadingDescriptors[10] = depthTarget;                   // GBufferDepth
     shadingDescriptors[11] = gbufferTargets[frameIndex][0]; // GBuffer0
     shadingDescriptors[12] = gbufferTargets[frameIndex][1]; // GBuffer1
@@ -2013,8 +2058,11 @@ int main() {
     shadingDescriptors[14] = Image{.image=swapchain.images[imageIndex],
         .imageView=swapchain.imageViews[imageIndex],.imageExtent=VkExtent3D(swapchain.width,
             swapchain.height,1),.imageFormat=swapchainFormat};
+    shadingDescriptors[15] = accumTargets[frameIndex];
+    shadingDescriptors[16] = indexBuffer;
 
-	pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,{});
+
+	pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
 
 	uint32_t groupsX = (swapchain.width+7)/8;
 	uint32_t groupsY = (swapchain.height+7)/8;
@@ -2065,6 +2113,8 @@ int main() {
 
     VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
 
+    frameInfo.resetHistory = 0;
+    frameInfo.count++;
     frameIndex = (frameIndex + 1) % FRAMES_IN_FLIGHT;
   }
 
@@ -2076,6 +2126,12 @@ int main() {
             destroyImage(m_device, m_vmaAllocator, image);
         }
     }
+  }
+
+  for(Image& img : accumTargets){
+      if(img.image){
+          destroyImage(m_device,m_vmaAllocator,img);
+      }
   }
 
   for(Image& img : depthTargets)

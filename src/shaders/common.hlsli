@@ -81,6 +81,11 @@ struct Globals
 	float    farPlane;
 };
 
+struct Frame{
+    uint count;
+    uint resetHistory;
+};
+
 struct VertexOutput
 {
     float4 clipPos       : SV_Position;
@@ -108,7 +113,8 @@ Texture2D<float4> GBuffer0 : register(t11,space0);
 Texture2D<float4> GBuffer1 : register(t12,space0);
 Texture2D<float4> GBuffer2 : register(t13,space0);
 RWTexture2D<float4> OutputImage : register(u14,space0);
-
+RWTexture2D<float4> AccumImage : register(u15,space0);
+ByteAddressBuffer indexBuffer : register(t16,space0);
 
 Texture2D    Textures[]   : register(t0, space1);
 

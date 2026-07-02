@@ -797,7 +797,7 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 			draw.orientation             = quat(1.0f, 0.0f, 0.0f, 0.0f);
 			draw.meshIndex               = meshIndex;
 			draw.meshletVisibilityOffset = 0;
-			draw.postPass                = 0;
+			draw.postPass                = scene.materials[r.materialIndex].alphaMode;
 			draw.materialIndex           = r.materialIndex;
 
 			uint32_t drawIndex = (uint32_t)scene.draws.size();
