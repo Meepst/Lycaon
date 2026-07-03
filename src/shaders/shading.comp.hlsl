@@ -22,8 +22,12 @@ struct Surface{
     float roughness;
 };
 
-static const float PI     = 3.14159265359;
-static const float INV_PI = 1.0 / PI;
+static const float PI = 3.14159265359;
+static const float INV_PI = 0.31830989;
+static const float INV_2PI = 0.15915494;
+
+static const float exposure = 0.003;
+static const float skyIntensity = 0.55;
 
 float D_GGX(float NdotH, float roughness)
 {
@@ -75,6 +79,20 @@ float pointAttenuation(float dist, float range){
         att *= window*window;
     }
     return att;
+}
+
+float3 sampleSky(float3 dir){
+    dir = normalize(dir);
+    float2 uv;
+    uv.x = atan2(dir.z,dir.x)*INV_2PI+0.5;
+    uv.y = acos(clamp(dir.y,-1.0,1.0))*INV_PI;
+    return Skybox.SampleLevel(LinearClamp,uv,0).rgb*skyIntensity;
+}
+
+float3 primaryRayDir(float2 uv){
+    float2 ndc = float2(uv.x,1.0-uv.y)*2.0-1.0;
+    float4 far = mul(invViewProj,float4(ndc,1.0,1.0));
+    return normalize(far.xyz/far.w-cameraPos);
 }
 
 float traceShadow(float3 pos, float3 N, float3 L, float maxDist){
@@ -224,29 +242,6 @@ float3 sampleCosineHemisphere(float3 N, float2 u){
     return normalize(T*(r*cos(phi))+B*(r*sin(phi))+N*sqrt(saturate(1.0-u.x)));
 }
 
-float3 shadeDirect(float3 p,float3 N, float3 V,float3 albedo,
-    float metallic, float roughness, inout Rng rng, uint shadowTaps){
-    float3 col = 0;
-    [loop]
-    for(uint i=0;i<lightCount;i++){
-        Light light = Lights[i];
-        LightSample ls = evaluateLight(light,p);
-        if(all(ls.Li==0.0)) continue;
-        if(dot(N,ls.Lo)<=0.0) continue;
-
-        float3 brdf = evaluateBRDF(N,V,ls.Lo,albedo,metallic,roughness);
-        float3 unshadow = brdf*ls.Li;
-
-        if(max(max(unshadow.r,unshadow.g),unshadow.b)<=1e-4) continue;
-
-        float coneCosMax = rsqrt(1.0+(light.radius/ls.distance)*(light.radius/ls.distance));
-        float shadow = traceSoftShadow(p,N,ls.Lo,ls.distance,coneCosMax,pcg(rng.state),shadowTaps);
-        col += unshadow*shadow;
-    }
-
-    return col;
-}
-
 Surface getSurface(RayQuery<RAY_FLAG_FORCE_OPAQUE> query){
     Surface surf;
     uint drawIndex = query.CommittedInstanceID();
@@ -325,7 +320,7 @@ float3 shadeDirect(Surface surf, float3 V, inout Rng rng, uint shadowTaps){
 
         float coneCosMax;
         if(light.type == 1){
-            coneCosMax = cos(light.radius);
+            coneCosMax = cos(light.radius/PI);
         }else{
             coneCosMax = rsqrt(1.0+(light.radius/s.distance)*(light.radius/s.distance));
         }
@@ -345,12 +340,13 @@ void main(uint3 dtid : SV_DispatchThreadID){
     OutputImage.GetDimensions(w,h);
 
     float depth = GBufferDepth.Load(int3(px,0));
+    float2 uv = (float2(px)+0.5)/float2(w,h);
     if(depth == 0){
-        OutputImage[px] = float4(0.f,0.f,0.f,1.f);
+        float3 sky = sampleSky(primaryRayDir(uv));
+        OutputImage[px] = float4(linearToSrgb(ACESFilm(sky*exposure)),1.0);
+        AccumImage[px] = float4(sky,1.0);
         return;
     }
-
-    float2 uv = (float2(px)+0.5)/float2(w,h);
 
     Surface surf;
 
@@ -406,11 +402,12 @@ void main(uint3 dtid : SV_DispatchThreadID){
         query.Proceed();
 
         if(query.CommittedStatus()!=COMMITTED_TRIANGLE_HIT){
-            radiance += throughput*float3(0.53,0.81,0.94); // need to add actual background
+            radiance += throughput*min(sampleSky(L),20.0)*exposure;
             break;
         }
 
         surf = getSurface(query);
+        radiance += throughput*min(sampleSky(L),20.0)*exposure;
         radiance += throughput*surf.emissive;
 
         V = -L;

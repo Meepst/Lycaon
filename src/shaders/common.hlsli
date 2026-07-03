@@ -115,6 +115,7 @@ Texture2D<float4> GBuffer2 : register(t13,space0);
 RWTexture2D<float4> OutputImage : register(u14,space0);
 RWTexture2D<float4> AccumImage : register(u15,space0);
 ByteAddressBuffer indexBuffer : register(t16,space0);
+Texture2D Skybox : register(t17,space0);
 
 Texture2D    Textures[]   : register(t0, space1);
 

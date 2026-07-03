@@ -1509,7 +1509,6 @@ int main() {
 
       images.push_back(img);
   }
-  destroyBuffer(m_vmaAllocator,imageStaging);
 
   deletionQueue.push_back([&](){
       for(Image& image : images){
@@ -1535,6 +1534,17 @@ int main() {
       getDescriptor(m_device, images[i].image,images[i].imageFormat,0,images[i].mipLevels
           ,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,dst,resourceDescriptorSize);
   }
+
+  Image skyboxImage = {};
+  if(!createDDSImage(skyboxImage, m_device, m_vmaAllocator, initCommandPool, initCommandBuffer, graphicsQueue, imageStaging, "assets/skyboxes/11zon_aristea_wreck_puresky_4k.dds", false)){
+      assert(!"failed to load skybox image");
+  }
+
+  destroyBuffer(m_vmaAllocator,imageStaging);
+
+  deletionQueue.push_back([&](){
+      destroyImage(m_device,m_vmaAllocator,skyboxImage);
+  });
 
   Camera cam = scene.camera;
 
@@ -1977,7 +1987,7 @@ int main() {
 
 	vkCmdEndRendering(commandBuffer);
 
-	VkImageMemoryBarrier2 toRead[6];
+	VkImageMemoryBarrier2 toRead[7];
 	for(int i=0;i<gbufferCount;i++){
 	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
 		memBar.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2025,7 +2035,7 @@ int main() {
 		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
 		memBar.srcAccessMask = 0;
 		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-		memBar.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 		memBar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 		memBar.image = accumTargets[frameIndex].image;
@@ -2034,8 +2044,22 @@ int main() {
 		toRead[5] = memBar;
 	}
 
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		memBar.srcAccessMask = 0;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+		memBar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		memBar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		memBar.image = skyboxImage.image;
+		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+
+		toRead[6] = memBar;
+	}
+
 	VkDependencyInfo shadingDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-	shadingDep.imageMemoryBarrierCount = 6;
+	shadingDep.imageMemoryBarrierCount = 7;
 	shadingDep.pImageMemoryBarriers = toRead;
 	vkCmdPipelineBarrier2(commandBuffer,&shadingDep);
 
@@ -2060,6 +2084,7 @@ int main() {
             swapchain.height,1),.imageFormat=swapchainFormat};
     shadingDescriptors[15] = accumTargets[frameIndex];
     shadingDescriptors[16] = indexBuffer;
+    shadingDescriptors[17] = skyboxImage;
 
 
 	pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
