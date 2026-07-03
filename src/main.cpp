@@ -1168,7 +1168,7 @@ int main() {
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
-                             //.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT)
+                             .add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT)
                              .add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT)
                              //.add_validation_feature_disable(VK_VALIDATION_FEATURE_DISABLE_SHADERS_EXT)
                              .require_api_version(1, 4, 0)
@@ -1361,7 +1361,7 @@ int main() {
 
   getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
 		static_cast<char*>(samplerHeap.info.pMappedData) + 0 * samplerDescriptorSize, descProps.samplerDescriptorSize);
-  getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
+  getDescriptor(m_device, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE,
 		static_cast<char*>(samplerHeap.info.pMappedData) + 1 * samplerDescriptorSize, descProps.samplerDescriptorSize);
 
 

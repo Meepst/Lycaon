@@ -343,7 +343,7 @@ void main(uint3 dtid : SV_DispatchThreadID){
     float2 uv = (float2(px)+0.5)/float2(w,h);
     if(depth == 0){
         float3 sky = sampleSky(primaryRayDir(uv));
-        OutputImage[px] = float4(linearToSrgb(ACESFilm(sky*exposure)),1.0);
+        OutputImage[px] = float4(linearToSrgb(ACESFilm(sky)),1.0);
         AccumImage[px] = float4(sky,1.0);
         return;
     }
