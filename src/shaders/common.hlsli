@@ -72,9 +72,8 @@ struct Globals
 	float4x4 view;
 	float4x4 proj;
 	float4x4 invViewProj;
+	float4x4 prevViewProj;
 	float3   cameraPos;
-	float    _pad0;
-	float    _pad1;
 	uint     lightCount;
 	float2   screenSize;
 	float    nearPlane;
@@ -84,6 +83,36 @@ struct Globals
 struct Frame{
     uint count;
     uint resetHistory;
+};
+
+struct Reservoir{
+    uint lightID;
+    float wSum;
+    float M;
+    float W;
+    float3 pos;
+    float _pad0;
+    float3 normal;
+    float _pad1;
+};
+
+struct LightSample{
+    float3 Lo;
+    float3 Li;
+    float distance;
+};
+
+struct Rng{
+    uint state;
+};
+
+struct Surface{
+    float3 p;
+    float3 N;
+    float3 albedo;
+    float3 emissive;
+    float metallic;
+    float roughness;
 };
 
 struct VertexOutput
@@ -117,6 +146,13 @@ RWTexture2D<float4> AccumImage : register(u15,space0);
 ByteAddressBuffer indexBuffer : register(t16,space0);
 Texture2D Skybox : register(t17,space0);
 
+RWStructuredBuffer<Reservoir> PrevReservoirs : register(u18,space0);
+RWStructuredBuffer<Reservoir> IntermediateReservoirs : register(u19,space0);
+RWStructuredBuffer<Reservoir> CurrReservoirs : register(u20,space0);
+Texture2D<float4> PrevAccumImage : register(t21,space0);
+Texture2D<float4> PrevHistPos : register(t22,space0);
+RWTexture2D<float4> HistPos : register(u23,space0);
+
 Texture2D    Textures[]   : register(t0, space1);
 
 SamplerState LinearWrap   : register(s0,space2);
@@ -133,6 +169,7 @@ static Globals globals_ = GlobalsBuf[0];
 #define nearPlane    globals_.nearPlane
 #define farPlane     globals_.farPlane
 #define lightCount   globals_.lightCount
+#define prevViewProj  globals_.prevViewProj
 
 float3 rotateByQuat(float3 v, float4 q)
 {

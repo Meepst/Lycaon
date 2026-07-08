@@ -27,6 +27,7 @@ void main(
     Mesh mesh = Meshes[draw.meshIndex];
     UnpackedMeshlet ml   = loadMeshlet(meshletIndex);
     SetMeshOutputCounts(ml.vertexCount, ml.triangleCount);
+
     if (gtid < ml.vertexCount)
     {
         uint localIndex  = MeshletData[ml.dataOffset + gtid];

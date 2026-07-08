@@ -38,6 +38,17 @@ struct alignas(16) TaskConstants
 	uint32_t _pad;
 };
 
+struct Reservoir{
+    uint32_t lightID;
+    float wSum;
+    float M;
+    float W;
+    float pos[3];
+    float _pad0;
+    float normal[3];
+    float _pad1;
+};
+
 struct Frame{
     uint32_t count;
     uint32_t resetHistory;
@@ -48,9 +59,8 @@ struct alignas(64) Globals{
     glm::mat4 view;
     glm::mat4 proj;
     glm::mat4 invViewProj;
+    glm::mat4 prevViewProj;
     glm::vec3 cameraPos;
-    float     _pad0;
-    float     _pad1;
     uint32_t lightCount;
     glm::vec2 screenSize;
     float     nearPlane;
@@ -1397,6 +1407,12 @@ int main() {
     printf("Failed to load: %s\n",(applicationDir/"spirv/pixel.frag.spv").string().c_str());
   }
 
+  auto generate_spv = load_spirv((applicationDir/"spirv/generate.comp.spv").string().c_str());
+
+  if(generate_spv.empty()){
+    printf("Failted to load: %s\n",(applicationDir/"spirv/generate.comp.spv").string().c_str());
+  }
+
   auto shading_spv = load_spirv((applicationDir/"spirv/shading.comp.spv").string().c_str());
 
   if(shading_spv.empty()){
@@ -1424,6 +1440,10 @@ int main() {
   refResult = spvReflectCreateShaderModule(frag_spv.size()*sizeof(uint32_t), frag_spv.data(), &fragModule);
   assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
 
+  SpvReflectShaderModule generateModule;
+  refResult = spvReflectCreateShaderModule(generate_spv.size()*sizeof(uint32_t), generate_spv.data(), &generateModule);
+  assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
+
   SpvReflectShaderModule shadingModule;
   refResult = spvReflectCreateShaderModule(shading_spv.size()*sizeof(uint32_t), shading_spv.data(), &shadingModule);
   assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
@@ -1438,16 +1458,23 @@ int main() {
   Program graphicsProgram = createProgram(m_device, {&taskModule,&vertModule,&fragModule}, resourceDescriptorSize, sizeof(TaskConstants));
   graphicsProgram.pipeline = createGraphicsPipeline(m_device, pipelineCache, gbufferInfo, graphicsProgram, {&taskModule,&vertModule,&fragModule});
 
+  Program generateProgram = createProgram(m_device,{&generateModule},resourceDescriptorSize,sizeof(Frame));
+  generateProgram.pipeline = createComputePipeline(m_device, pipelineCache, generateProgram, &generateModule);
+
   Program shadingProgram = createProgram(m_device,{&shadingModule},resourceDescriptorSize,sizeof(Frame));
   shadingProgram.pipeline = createComputePipeline(m_device, pipelineCache, shadingProgram, &shadingModule);
 
   spvReflectDestroyShaderModule(&taskModule);
   spvReflectDestroyShaderModule(&vertModule);
   spvReflectDestroyShaderModule(&fragModule);
+  spvReflectDestroyShaderModule(&generateModule);
   spvReflectDestroyShaderModule(&shadingModule);
 
   deletionQueue.push_back(
       [&]() { vkDestroyPipeline(m_device, graphicsProgram.pipeline, nullptr);}
+  );
+  deletionQueue.push_back(
+      [&](){vkDestroyPipeline(m_device,generateProgram.pipeline,nullptr);}
   );
   deletionQueue.push_back(
       [&](){vkDestroyPipeline(m_device,shadingProgram.pipeline,nullptr);}
@@ -1567,7 +1594,7 @@ int main() {
   globals.viewProj    = proj * view;
   globals.invViewProj = glm::inverse(globals.viewProj);
   globals.cameraPos   = cam.position;
-
+  globals.prevViewProj = glm::mat4(1.0f);
   // Late afternoon sun
   globals.lightCount = scene.lights.size();
 
@@ -1661,7 +1688,16 @@ int main() {
 
   tlas = createTLAS(m_device,m_vmaAllocator,tlasStagingBuffer,tlasInstanceBuffer,scene.draws.size(),tlasBuffer,asProps);
 
+  Buffer reservoirs[2];
+  Buffer IntermediateReservoirs;
 
+  for(auto& res : reservoirs){
+      res = createBuffer(m_device,m_vmaAllocator,size_t(swapchain.width*swapchain.height*sizeof(Reservoir)),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VMA_MEMORY_USAGE_GPU_ONLY);
+  }
+
+  IntermediateReservoirs = createBuffer(m_device,m_vmaAllocator,size_t(swapchain.width*swapchain.height*sizeof(Reservoir)),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VMA_MEMORY_USAGE_GPU_ONLY);
 
   deletionQueue.push_back([&](){
       destroyBuffer(m_vmaAllocator, meshBuffer);
@@ -1678,6 +1714,10 @@ int main() {
       destroyBuffer(m_vmaAllocator, blasBuffer);
       destroyBuffer(m_vmaAllocator, tlasStagingBuffer);
       destroyBuffer(m_vmaAllocator, tlasInstanceBuffer);
+      destroyBuffer(m_vmaAllocator, IntermediateReservoirs);
+      for(auto& buf : reservoirs){
+          destroyBuffer(m_vmaAllocator,buf);
+      }
       vkDestroyAccelerationStructureKHR(m_device,tlas,0);
       for(VkAccelerationStructureKHR as : blas){
           vkDestroyAccelerationStructureKHR(m_device,as,0);
@@ -1689,6 +1729,7 @@ int main() {
   Image gbufferTargets[FRAMES_IN_FLIGHT][gbufferCount] = {};
   Image depthTargets[FRAMES_IN_FLIGHT] = {};
   Image accumTargets[FRAMES_IN_FLIGHT] = {};
+  Image HistPos[FRAMES_IN_FLIGHT] = {};
 
   double elapsedTime = glfwGetTime();
 
@@ -1697,6 +1738,8 @@ int main() {
   frameInfo.count = 0;
   frameInfo.resetHistory = 0;
   int frameIndex = 0;
+  int prevFrameIndex = 0;
+  bool initHistory = false;
   while (!glfwWindowShouldClose(window)) {
     double currTime = glfwGetTime();
     float dt = float(currTime-elapsedTime);
@@ -1741,11 +1784,27 @@ int main() {
           }
       }
 
-      for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
-          for(Image& img : accumTargets){
-              if(img.image){
-                  destroyImage(m_device,m_vmaAllocator,img);
-              }
+      for(auto& res : reservoirs){
+          if(res.buffer){
+              destroyBuffer(m_vmaAllocator,res);
+          }
+      }
+
+      if(IntermediateReservoirs.buffer){
+          destroyBuffer(m_vmaAllocator,IntermediateReservoirs);
+      }
+
+
+    for(Image& img : accumTargets){
+        if(img.image){
+            destroyImage(m_device,m_vmaAllocator,img);
+        }
+    }
+
+
+      for(auto& img : HistPos){
+          if(HistPos->image){
+              destroyImage(m_device,m_vmaAllocator,img);
           }
       }
 
@@ -1759,6 +1818,20 @@ int main() {
               gbufferTargets[j][i] = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),
                   gbufferFormats[i],VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,false);
           }
+      }
+
+      for(auto& res : reservoirs){
+          res = createBuffer(m_device,m_vmaAllocator,size_t(swapchain.width*swapchain.height*sizeof(Reservoir)),
+              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VMA_MEMORY_USAGE_GPU_ONLY);
+      }
+
+      IntermediateReservoirs = createBuffer(m_device,m_vmaAllocator,size_t(swapchain.width*swapchain.height*sizeof(Reservoir)),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VMA_MEMORY_USAGE_GPU_ONLY);
+
+      for(Image& img : HistPos){
+          img = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),VK_FORMAT_R32G32B32A32_SFLOAT,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+              | VK_IMAGE_USAGE_STORAGE_BIT,false);
       }
 
       for(Image& img : accumTargets){
@@ -1779,6 +1852,8 @@ int main() {
           VK_CHECK(vkCreateImageView(m_device,&ivinfo,nullptr,&swapchain.imageViews[i]));
       }
 
+      initHistory = true;
+      frameInfo.resetHistory = 1;
     }
 
     VkResult fenceResult = vkWaitForFences(m_device, 1, &renderFences[frameIndex], VK_TRUE,
@@ -1836,7 +1911,25 @@ int main() {
         tlasNeedsRebuild = false;
     }
 
-    globals.cameraPos = cam.position;
+    if(initHistory){
+        initHistory = false;
+        uint32_t n = 0;
+        VkImageMemoryBarrier2 inits[2*FRAMES_IN_FLIGHT];
+        auto add = [&](VkImage img){
+        VkImageMemoryBarrier2 b{ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            b.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;  b.srcAccessMask = 0;
+                b.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;  b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                b.image = img; b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1 };
+                inits[n++] = b;
+            };
+            for(auto& i : accumTargets) add(i.image);
+            for(auto& i : HistPos)      add(i.image);
+            VkDependencyInfo dep{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.imageMemoryBarrierCount = n; dep.pImageMemoryBarriers = inits;
+            vkCmdPipelineBarrier2(commandBuffer, &dep);
+    }
 
     globals.cameraPos = cam.position;
 
@@ -1845,6 +1938,7 @@ int main() {
     view = inverse(view);
     view = glm::scale(glm::identity<glm::mat4>(), vec3(1, 1, -1)) * view;
 
+    globals.prevViewProj = globals.viewProj;
     glm::mat4 proj = perspectiveProjection(cam.fovY, float(swapchain.width)/float(swapchain.height), cam.znear);
 
     globals.proj = proj;
@@ -1987,7 +2081,12 @@ int main() {
 
 	vkCmdEndRendering(commandBuffer);
 
-	VkImageMemoryBarrier2 toRead[7];
+	VkImageLayout membarOldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	if(frameInfo.resetHistory){
+	    membarOldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+
+	VkImageMemoryBarrier2 toRead[9];
 	for(int i=0;i<gbufferCount;i++){
 	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
 		memBar.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2036,7 +2135,7 @@ int main() {
 		memBar.srcAccessMask = 0;
 		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-		memBar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		memBar.oldLayout = membarOldLayout;
 		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 		memBar.image = accumTargets[frameIndex].image;
 		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
@@ -2058,15 +2157,67 @@ int main() {
 		toRead[6] = memBar;
 	}
 
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		memBar.srcAccessMask = 0;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+		memBar.oldLayout = membarOldLayout;
+		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		memBar.image = accumTargets[frameIndex].image;
+		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+
+		toRead[7] = memBar;
+	}
+
+	{
+	    VkImageMemoryBarrier2 memBar{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+		memBar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		memBar.srcAccessMask = 0;
+		memBar.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		memBar.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+		memBar.oldLayout = membarOldLayout;
+		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		memBar.image = HistPos[frameIndex].image;
+		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+
+		toRead[8] = memBar;
+	}
+
 	VkDependencyInfo shadingDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-	shadingDep.imageMemoryBarrierCount = 7;
+	shadingDep.imageMemoryBarrierCount = 9;
 	shadingDep.pImageMemoryBarriers = toRead;
 	vkCmdPipelineBarrier2(commandBuffer,&shadingDep);
 
-	vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,shadingProgram.pipeline);
+	uint32_t pp = frameInfo.count & 1u;
+	Buffer prevRes = reservoirs[pp^1u];
+	Buffer currRes = reservoirs[pp];
+
+	VkBufferMemoryBarrier2 resPre[3];
+	Buffer* resBuffers[3] = {&IntermediateReservoirs,&reservoirs[0],&reservoirs[1]};
+	for(int i=0;i<3;i++){
+        resPre[i] = VkBufferMemoryBarrier2{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+        resPre[i].srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        resPre[i].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+            | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        resPre[i].dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        resPre[i].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+            | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        resPre[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        resPre[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        resPre[i].buffer = resBuffers[i]->buffer;
+        resPre[i].size   = VK_WHOLE_SIZE;
+	}
+	VkDependencyInfo resPreDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+	resPreDep.bufferMemoryBarrierCount = 3;
+	resPreDep.pBufferMemoryBarriers = resPre;
+	vkCmdPipelineBarrier2(commandBuffer,&resPreDep);
+
+	vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,generateProgram.pipeline);
 
 	DescriptorInfo shadingDescriptors[32] = {};
-	shadingDescriptors[0] = globalBuffer;                  // GlobalsBuf
+	shadingDescriptors[0] = globalBuffer;
 	shadingDescriptors[1] = vertBuffer;
 	shadingDescriptors[2] = meshletDataBuffer;
 	shadingDescriptors[3] = meshletBuffer;
@@ -2085,13 +2236,37 @@ int main() {
     shadingDescriptors[15] = accumTargets[frameIndex];
     shadingDescriptors[16] = indexBuffer;
     shadingDescriptors[17] = skyboxImage;
+    shadingDescriptors[18] = prevRes;
+    shadingDescriptors[19] = IntermediateReservoirs;
+    shadingDescriptors[20] = currRes;
+    shadingDescriptors[21] = accumTargets[prevFrameIndex];
+    shadingDescriptors[22] = HistPos[prevFrameIndex];
+    shadingDescriptors[23] = HistPos[frameIndex];
 
-
-	pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
+	pushDescriptorsAndConstants(commandBuffer,frameDesc,generateProgram,shadingDescriptors,frameInfo);
 
 	uint32_t groupsX = (swapchain.width+7)/8;
 	uint32_t groupsY = (swapchain.height+7)/8;
 	vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
+
+	VkBufferMemoryBarrier2 interBarr{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+	interBarr.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    interBarr.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    interBarr.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    interBarr.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    interBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    interBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    interBarr.buffer = IntermediateReservoirs.buffer;
+    interBarr.size = VK_WHOLE_SIZE;
+
+    VkDependencyInfo interDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    interDep.bufferMemoryBarrierCount = 1;
+    interDep.pBufferMemoryBarriers = &interBarr;
+    vkCmdPipelineBarrier2(commandBuffer,&interDep);
+
+    vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,shadingProgram.pipeline);
+    pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
+    vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
 
 	transitionImage(commandBuffer, swapchain.images[imageIndex],
     	VK_IMAGE_LAYOUT_GENERAL,
@@ -2140,6 +2315,7 @@ int main() {
 
     frameInfo.resetHistory = 0;
     frameInfo.count++;
+    prevFrameIndex = frameIndex;
     frameIndex = (frameIndex + 1) % FRAMES_IN_FLIGHT;
   }
 
@@ -2151,6 +2327,12 @@ int main() {
             destroyImage(m_device, m_vmaAllocator, image);
         }
     }
+  }
+
+  for(Image& img : HistPos){
+      if(img.image){
+          destroyImage(m_device,m_vmaAllocator,img);
+      }
   }
 
   for(Image& img : accumTargets){
