@@ -25,3 +25,6 @@
 [submodule "dependencies/fpng"]
 	path = dependencies/fpng
 	url = git@github.com:richgel999/fpng.git
+[submodule "dependencies/nuklear"]
+	path = dependencies/nuklear
+	url = git@github.com:Immediate-Mode-UI/Nuklear.git

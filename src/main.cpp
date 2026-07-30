@@ -10,6 +10,11 @@
 #include <iostream>
 #include <filesystem>
 
+#include <tracy/Tracy.hpp>
+
+#define NK_IMPLEMENTATION
+#include "nuklear.h"
+
 #if defined(_WIN32)
     #include <windows.h>
 #endif
@@ -65,6 +70,18 @@ struct alignas(64) Globals{
     glm::vec2 screenSize;
     float     nearPlane;
     float     farPlane;
+};
+
+struct UIConstants{
+    float scale[2];
+    float translate[2];
+    uint32_t texID;
+};
+
+struct UIVertex{
+    float pos[2];
+    float uv[2];
+    nk_byte col[4];
 };
 
 struct Program{
@@ -324,19 +341,18 @@ Program createProgram(VkDevice device, std::vector<SpvReflectShaderModule*> modu
 	program.descriptorCount = pushDescriptorCount;
 
 	// compute push constant size from reflection
-	size_t computedPushConstantSize = 0;
+	uint32_t computedPushConstantSize = 0;
 	for (auto* mod : modules) {
         uint32_t pcCount = 0;
         spvReflectEnumeratePushConstantBlocks(mod,&pcCount, nullptr);
         std::vector<SpvReflectBlockVariable*> blocks(pcCount);
         spvReflectEnumeratePushConstantBlocks(mod,&pcCount, blocks.data());
         for (auto& pc : blocks) {
-            computedPushConstantSize += pc->size;
+            computedPushConstantSize = std::max(computedPushConstantSize,pc->offset+pc->size);
         }
 	}
 
 	program.pushConstantSize = uint32_t(computedPushConstantSize);
-
 	assert(program.pushConstantSize == pushConstantSize);
 
 	return program;
@@ -438,6 +454,153 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineCache pipelineCache
 		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_DEPTH_BIAS,VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+	dynamicState.dynamicStateCount = sizeof(dynamicStates) / sizeof(dynamicStates[0]);
+	dynamicState.pDynamicStates = dynamicStates;
+	createInfo.pDynamicState = &dynamicState;
+
+	createInfo.layout = VK_NULL_HANDLE;
+
+	VkPipeline pipeline = 0;
+	VK_CHECK(vkCreateGraphicsPipelines(device, pipelineCache, 1, &createInfo, 0, &pipeline));
+
+	return pipeline;
+}
+
+VkPipeline createUIPipeline(VkDevice device, VkPipelineCache pipelineCache,
+                                  const VkPipelineRenderingCreateInfo& renderingInfo,
+                                  const Program& program,
+                                  std::vector<SpvReflectShaderModule*> modules){
+    VkPipelineCreateFlags2CreateInfo extraFlags = { VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO };
+	extraFlags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+	extraFlags.pNext = &renderingInfo;
+
+	VkGraphicsPipelineCreateInfo createInfo = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+	createInfo.pNext = &extraFlags;
+
+	// generate heap mapping from pre-gathered program data
+	VkShaderDescriptorSetAndBindingMappingInfoEXT heapMapping = {};
+	VkDescriptorSetAndBindingMappingEXT heapMappingTable[34] = {};
+
+	std::string samplerNames[32] = {};
+	for (int i = 0; i < 32; ++i)
+		samplerNames[i] = program.samplerNames[i];
+
+	heapMapping = generateHeapMapping(
+	    program.resourceMask, program.resourceTypes, program.resourceNames,
+	    program.samplerMask, samplerNames,
+	    program.pushConstantSize, program.descriptorSize,
+	    heapMappingTable);
+
+    // shader stages
+	std::vector<VkPipelineShaderStageCreateInfo> stages(modules.size());
+	std::vector<VkShaderModuleCreateInfo> shaderModules(modules.size());
+
+	for (size_t i = 0; i < modules.size(); ++i)
+	{
+		auto& mod = modules[i];
+
+		VkShaderModuleCreateInfo& module = shaderModules[i];
+		module.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		module.codeSize = spvReflectGetCodeSize(mod);
+		module.pCode = spvReflectGetCode(mod);
+		module.pNext = &heapMapping;
+
+		VkPipelineShaderStageCreateInfo& stage = stages[i];
+		stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		stage.stage = static_cast<VkShaderStageFlagBits>(mod->shader_stage);
+		stage.pName = mod->entry_point_name;
+		stage.pSpecializationInfo = nullptr;
+		stage.pNext = &module;
+	}
+
+	createInfo.stageCount = uint32_t(stages.size());
+	createInfo.pStages = stages.data();
+
+	VkVertexInputBindingDescription vertBinding{};
+	vertBinding.binding = 0;
+	vertBinding.stride = sizeof(UIVertex);
+	vertBinding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription vertAttribs[3] = {};
+	vertAttribs[0].location = 0;
+	vertAttribs[0].binding = 0;
+	vertAttribs[0].format = VK_FORMAT_R32G32_SFLOAT;
+	vertAttribs[0].offset = offsetof(UIVertex,pos);
+
+	vertAttribs[1].location = 1;
+	vertAttribs[1].binding = 0;
+	vertAttribs[1].format = VK_FORMAT_R32G32_SFLOAT;
+	vertAttribs[1].offset  = offsetof(UIVertex,uv);
+
+	vertAttribs[2].location = 2;
+	vertAttribs[2].binding = 0;
+	vertAttribs[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+	vertAttribs[2].offset  = offsetof(UIVertex,col);
+
+	VkPipelineVertexInputStateCreateInfo vertInput{.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+	vertInput.vertexBindingDescriptionCount = 1;
+	vertInput.pVertexBindingDescriptions = &vertBinding;
+	vertInput.vertexAttributeDescriptionCount = 3;
+	vertInput.pVertexAttributeDescriptions = vertAttribs;
+
+	createInfo.pVertexInputState = &vertInput;
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	createInfo.pInputAssemblyState = &inputAssembly;
+
+	VkPipelineViewportStateCreateInfo viewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+	createInfo.pViewportState = &viewportState;
+
+	VkPipelineRasterizationStateCreateInfo rasterizationState = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+	rasterizationState.lineWidth = 1.f;
+	rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizationState.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizationState.depthBiasEnable = true;
+	createInfo.pRasterizationState = &rasterizationState;
+
+	VkPipelineMultisampleStateCreateInfo multisampleState = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+	multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	createInfo.pMultisampleState = &multisampleState;
+
+	VkPipelineDepthStencilStateCreateInfo depthStencilState = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+	depthStencilState.depthTestEnable = true;
+	depthStencilState.depthWriteEnable = true;
+	depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
+	createInfo.pDepthStencilState = &depthStencilState;
+
+	VkPipelineColorBlendAttachmentState colorAttachmentStates[8] = {};
+	assert(renderingInfo.colorAttachmentCount <= 8);
+	for (uint32_t i = 0; i < renderingInfo.colorAttachmentCount; ++i){
+        colorAttachmentStates[i].blendEnable = VK_TRUE;
+        colorAttachmentStates[i].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorAttachmentStates[i].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachmentStates[i].colorBlendOp = VK_BLEND_OP_ADD;
+        colorAttachmentStates[i].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorAttachmentStates[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachmentStates[i].alphaBlendOp = VK_BLEND_OP_ADD;
+        colorAttachmentStates[i].colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	}
+
+	VkPipelineColorBlendStateCreateInfo colorBlendState = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+	colorBlendState.attachmentCount = renderingInfo.colorAttachmentCount;
+	colorBlendState.pAttachments = colorAttachmentStates;
+	createInfo.pColorBlendState = &colorBlendState;
+
+	VkDynamicState dynamicStates[] = {
+		VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+		VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_DEPTH_BIAS,VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+                                             VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                                             VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
 	};
 
 	VkPipelineDynamicStateCreateInfo dynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
@@ -660,7 +823,7 @@ struct DescriptorInfo
 	const void* resource = NULL;
 	int resourceMip = -1;
 
-	DescriptorInfo()
+	DescriptorInfo() : buffer{VK_NULL_HANDLE,0,0}
 	{
 	}
 
@@ -777,9 +940,9 @@ uint32_t pushDescriptorHeap(FrameDescriptors& framedesc, const Program& program,
 	return result;
 }
 
-template<typename PushConstants, size_t PushDescriptors>
+template<typename PushConstants>
 void pushDescriptorsAndConstants(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc,
-                                  const Program& program, const DescriptorInfo (&descriptors)[PushDescriptors],
+                                  const Program& program, const DescriptorInfo* descriptors,
                                   const PushConstants& constants){
     // Write descriptor data into the heap
     uint32_t baseOffset = pushDescriptorHeap(framedesc, program, descriptors);
@@ -802,6 +965,14 @@ void pushDescriptorsAndConstants(VkCommandBuffer commandBuffer, FrameDescriptors
 
     vkCmdPushDataEXT(commandBuffer, &pushDataInfo);
 }
+
+template<typename PushConstants>
+void pushDescriptorsAndConstants(VkCommandBuffer commandBuffer, FrameDescriptors& framedesc,
+                                  const Program& program, std::initializer_list<DescriptorInfo> descriptors,
+                                  const PushConstants& constants){
+    pushDescriptorsAndConstants(commandBuffer, framedesc, program, descriptors.begin(), constants);
+}
+
 
 void setDebugName(VkDevice device, uint64_t handle, VkObjectType type, const char* name)
 {
@@ -1150,7 +1321,8 @@ void saveScreenshot(VkDevice device, VkPhysicalDevice physicalDevice, VmaAllocat
     }
 }
 
-int main() {
+
+int main(int argc, char** argv) {
   glfwInit();
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   GLFWwindow *window =
@@ -1419,6 +1591,18 @@ int main() {
       printf("Failted to load: %s\n",(applicationDir/"spirv/shading.comp.spv").string().c_str());
   }
 
+  auto uivert_spv = load_spirv((applicationDir/"spirv/ui.vert.spv").string().c_str());
+
+  if(uivert_spv.empty()){
+      printf("Failed to load: %s\n",(applicationDir/"spirv/ui.vert.spv").string().c_str());
+  }
+
+  auto uifrag_spv = load_spirv((applicationDir/"spirv/ui.frag.spv").string().c_str());
+
+  if(uifrag_spv.empty()){
+      printf("Failed to load: %s\n",(applicationDir/"spirv/ui.frag.spv").string().c_str());
+  }
+
   VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
 
   static const size_t gbufferCount = 3;
@@ -1448,10 +1632,24 @@ int main() {
   refResult = spvReflectCreateShaderModule(shading_spv.size()*sizeof(uint32_t), shading_spv.data(), &shadingModule);
   assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
 
+  SpvReflectShaderModule UIVertModule;
+  refResult = spvReflectCreateShaderModule(uivert_spv.size()*sizeof(uint32_t), uivert_spv.data(), &UIVertModule);
+  assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
+
+  SpvReflectShaderModule UIFragModule;
+  refResult = spvReflectCreateShaderModule(uifrag_spv.size()*sizeof(uint32_t), uifrag_spv.data(), &UIFragModule);
+  assert(refResult == SPV_REFLECT_RESULT_SUCCESS);
+
   VkPipelineRenderingCreateInfo gbufferInfo = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
   gbufferInfo.colorAttachmentCount = gbufferCount;
   gbufferInfo.pColorAttachmentFormats = gbufferFormats;
   gbufferInfo.depthAttachmentFormat = depthFormat;
+
+  VkPipelineRenderingCreateInfo UIrenderInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+  UIrenderInfo.colorAttachmentCount = 1;
+  UIrenderInfo.pColorAttachmentFormats = &swapchainFormat;
+  UIrenderInfo.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+  UIrenderInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
   VkPipelineCache pipelineCache = 0;
 
@@ -1464,11 +1662,16 @@ int main() {
   Program shadingProgram = createProgram(m_device,{&shadingModule},resourceDescriptorSize,sizeof(Frame));
   shadingProgram.pipeline = createComputePipeline(m_device, pipelineCache, shadingProgram, &shadingModule);
 
+  Program UIProgram = createProgram(m_device,{&UIVertModule,&UIFragModule},resourceDescriptorSize,sizeof(UIConstants));
+  UIProgram.pipeline = createUIPipeline(m_device, pipelineCache,UIrenderInfo, UIProgram, {&UIVertModule,&UIFragModule});
+
   spvReflectDestroyShaderModule(&taskModule);
   spvReflectDestroyShaderModule(&vertModule);
   spvReflectDestroyShaderModule(&fragModule);
   spvReflectDestroyShaderModule(&generateModule);
   spvReflectDestroyShaderModule(&shadingModule);
+  spvReflectDestroyShaderModule(&UIVertModule);
+  spvReflectDestroyShaderModule(&UIFragModule);
 
   deletionQueue.push_back(
       [&]() { vkDestroyPipeline(m_device, graphicsProgram.pipeline, nullptr);}
@@ -1481,12 +1684,26 @@ int main() {
   );
 
   deletionQueue.push_back(
+      [&](){vkDestroyPipeline(m_device,UIProgram.pipeline,nullptr);}
+  );
+
+  deletionQueue.push_back(
       [&]() { vkDestroyCommandPool(m_device, initCommandPool, nullptr); });
 
-
   const char *scenePath = "assets/sponza/NewSponza_Main_glTF_003.gltf";
+  const char* skyboxPath = "assets/skyboxes/11zon_aristea_wreck_puresky_4k.dds";
+  for(uint32_t i = 1;i<argc;i++){
+      if(strcmp(argv[i],"--scene")==0&&i+1<argc){
+          scenePath = argv[++i];
+      }else if(strcmp(argv[i],"--skybox")==0&&i+1<argc){
+          skyboxPath = argv[++i];
+      }else if(argv[i][0] != '-'){
+          scenePath = argv[i];
+      }
+  }
+
   Scene scene = {};
-  bool sceneResult = loadGltf(scenePath, scene);
+  bool sceneResult = loadGltf(scenePath, scene,64,124,float(swapchain.width)/float(swapchain.height));
   if (!sceneResult) {
     assert(!"failed to load scene");
   }
@@ -1499,11 +1716,21 @@ int main() {
       maxV = std::max(maxV,ml.vertexCount);
       maxT = std::max(maxT,ml.triangleCount);
   }
-  printf("max vertices: %u, max triangles: %u\n", maxV, maxT);
-  assert(maxV <= 64);
-  assert(maxT <= 124);
 
+  if(scene.lights.size() == 0){
+      Light sun{};
+      sun.type = cgltf_light_type_directional;
+      sun.position = vec3(0.f);
+      sun.color = vec3(1.f,0.956f,0.838f);
+      sun.direction = normalize(vec3(-0.3f,-1.f,-0.3f));
+      sun.intensity = 20;
+      sun.spotCosInner = 1.f;
+      sun.spotCosOuter = 0.f;
+      sun.range = FLT_MAX;
+      sun.radius = 0.00465;
 
+      scene.lights.push_back(sun);
+  }
 
   std::vector<float> weights(scene.lights.size());
   for(size_t i=0;i<scene.lights.size();i++){
@@ -1563,15 +1790,48 @@ int main() {
   }
 
   Image skyboxImage = {};
-  if(!createDDSImage(skyboxImage, m_device, m_vmaAllocator, initCommandPool, initCommandBuffer, graphicsQueue, imageStaging, "assets/skyboxes/11zon_aristea_wreck_puresky_4k.dds", false)){
+  if(!createDDSImage(skyboxImage, m_device, m_vmaAllocator, initCommandPool, initCommandBuffer, graphicsQueue, imageStaging, skyboxPath, false)){
       assert(!"failed to load skybox image");
   }
 
+  nk_context nkContext;
+  nk_font_atlas nkAtlas;
+  nk_draw_null_texture nkNull;
+
+  nk_font_atlas_init_default(&nkAtlas);
+  nk_font_atlas_begin(&nkAtlas);
+
+  int atlasW,atlasH;
+  const void* atlasPixels = nk_font_atlas_bake(&nkAtlas,&atlasW,&atlasH,NK_FONT_ATLAS_RGBA32);
+  printf("before font image\n");
+  Image fontImage = createImage(m_vmaAllocator,m_device,graphicsQueue,initCommandBuffer,
+      (void*)atlasPixels,VkExtent3D((uint32_t)atlasW,(uint32_t)atlasH,4),
+      VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,false);
+
+  uint32_t fontSlot = (uint32_t)scene.textures.size();
+  void* fontDst = static_cast<char*>(resourceHeap.info.pMappedData)
+      + DESCRIPTOR_LIMIT*resourceDescriptorSize + fontSlot*resourceDescriptorSize;
+
+  getDescriptor(m_device,fontImage.image,fontImage.imageFormat,0,fontImage.mipLevels,
+      VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,fontDst,resourceDescriptorSize);
+
+  nk_font_atlas_end(&nkAtlas,nk_handle_id((int)fontSlot),&nkNull);
+  nk_init_default(&nkContext,&nkAtlas.default_font->handle);
+
+  //nk_font_atlas_end(&nkAtlas,nk_handle_id)
   destroyBuffer(m_vmaAllocator,imageStaging);
 
   deletionQueue.push_back([&](){
       destroyImage(m_device,m_vmaAllocator,skyboxImage);
   });
+
+  deletionQueue.push_back(
+      [&](){
+          nk_font_atlas_clear(&nkAtlas);
+          nk_free(&nkContext);
+          destroyImage(m_device,m_vmaAllocator,fontImage);
+    }
+  );
 
   Camera cam = scene.camera;
 
@@ -1650,6 +1910,27 @@ int main() {
 
   batchUpload(m_device, m_vmaAllocator,initCommandBuffer,
       graphicsQueue,uploads);
+
+  constexpr size_t NK_MAX_VERTS = 512*1024;
+  constexpr size_t NK_MAX_IDX = 128*1024;
+  Buffer nkVertBuffers[FRAMES_IN_FLIGHT];
+  Buffer nkIndexBuffers[FRAMES_IN_FLIGHT];
+
+  for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
+      nkVertBuffers[i] = createBuffer(m_device,m_vmaAllocator,NK_MAX_VERTS,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO);
+      nkIndexBuffers[i] = createBuffer(m_device,m_vmaAllocator,NK_MAX_IDX,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO);
+  }
+
+  deletionQueue.push_back(
+      [&](){
+          destroyBuffer(m_vmaAllocator,nkVertBuffers[0]);
+          destroyBuffer(m_vmaAllocator,nkVertBuffers[1]);
+          destroyBuffer(m_vmaAllocator,nkIndexBuffers[0]);
+          destroyBuffer(m_vmaAllocator,nkIndexBuffers[1]);
+      }
+  );
 
   std::vector<VkAccelerationStructureKHR> blas;
   std::vector<VkDeviceAddress> blasAddresses;
@@ -1740,13 +2021,17 @@ int main() {
   int frameIndex = 0;
   int prevFrameIndex = 0;
   bool initHistory = false;
+  struct nk_rect uiBounds = {20,20,240,140};
+  int uiInit = 0;
   while (!glfwWindowShouldClose(window)) {
+    ZoneScoped;
     double currTime = glfwGetTime();
     float dt = float(currTime-elapsedTime);
     elapsedTime = currTime;
 
     glfwPollEvents();
 
+    //nk_input_begin(&nkContext);
     if(glfwGetInputMode(window,GLFW_CURSOR)==GLFW_CURSOR_DISABLED){
         double xpos;
         double ypos;
@@ -1767,11 +2052,13 @@ int main() {
 
 		frameInfo.resetHistory = 1;
     }
+    //nk_input_end(&nkContext);
 
     SwapchainStatus swapchainStatus = updateSwapchain(
         swapchain, m_device, window, swapchainBuilder, swapchainFormat);
     if (swapchainStatus == Swapchain_NotReady) {
-      continue;
+        nk_clear(&nkContext);
+        continue;
     }
 
     if (swapchainStatus == Swapchain_Resized || !depthTargets[0].image) {
@@ -1803,7 +2090,7 @@ int main() {
 
 
       for(auto& img : HistPos){
-          if(HistPos->image){
+          if(img.image){
               destroyImage(m_device,m_vmaAllocator,img);
           }
       }
@@ -1855,6 +2142,42 @@ int main() {
       initHistory = true;
       frameInfo.resetHistory = 1;
     }
+
+    if(swapchainStatus == Swapchain_Resized || !uiInit){
+        struct nk_window *win = nk_window_find(&nkContext,"Lycaon");
+        struct nk_rect b = win ? win->bounds:uiBounds;
+
+        float wid = float(swapchain.width);
+        float hei = float(swapchain.height);
+        float boundPad = 4.0f;
+        b.w = NK_MIN(b.w,wid-2.f*boundPad);
+        b.h = NK_MIN(b.h,hei-2.f*boundPad);
+        b.x = NK_CLAMP(boundPad,b.x,wid-b.w-boundPad);
+        b.y = NK_CLAMP(boundPad,b.y,hei-b.h-boundPad);
+
+        uiBounds = b;
+        if(uiInit){
+            nk_window_set_bounds(&nkContext,"Lycaon",b);
+        }
+
+        if(wid < 640 || hei < 400){
+            nk_window_collapse(&nkContext,"Lycaon",NK_MINIMIZED);
+        }
+
+        uiInit = 1;
+    }
+
+    if(nk_begin(&nkContext,"Lycaon",uiBounds,
+        NK_WINDOW_BORDER|NK_WINDOW_TITLE|NK_WINDOW_MOVABLE|
+        NK_WINDOW_MINIMIZABLE|NK_WINDOW_SCALABLE)){
+            nk_layout_row_dynamic(&nkContext,20,1);
+            nk_labelf(&nkContext,NK_TEXT_LEFT,"%.1f FPS (%.2f ms)",1.0f/dt,dt*1000.0f);
+            nk_labelf(&nkContext,NK_TEXT_LEFT,"T: Toggle UI");
+            nk_labelf(&nkContext,NK_TEXT_LEFT,"F: Screenshot");
+            nk_labelf(&nkContext,NK_TEXT_LEFT,"Right Click: Enables moving camera view");
+            nk_labelf(&nkContext,NK_TEXT_LEFT,"WASD: To move camera");
+        }
+    nk_end(&nkContext);
 
     VkResult fenceResult = vkWaitForFences(m_device, 1, &renderFences[frameIndex], VK_TRUE,
                              UINT64_MAX);
@@ -2016,7 +2339,7 @@ int main() {
 		gbufferAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
 		gbufferAttachments[i].imageView = gbufferTargets[frameIndex][i].imageView;
 		gbufferAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		gbufferAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 		gbufferAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		gbufferAttachments[i].clearValue.color = colorClear;
 	}
@@ -2068,7 +2391,7 @@ int main() {
 		push.meshletCount = lod.meshletCount;
 
 		DescriptorInfo descriptors[] = {globalBuffer,vertBuffer,meshletDataBuffer
-		,meshletBuffer,meshBuffer,drawBuffer,matBuffer};
+		    ,meshletBuffer,meshBuffer,drawBuffer,matBuffer};
 
 		pushDescriptorsAndConstants(commandBuffer, frameDesc, graphicsProgram,
                             descriptors, push);
@@ -2165,7 +2488,7 @@ int main() {
 		memBar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 		memBar.oldLayout = membarOldLayout;
 		memBar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		memBar.image = accumTargets[frameIndex].image;
+		memBar.image = accumTargets[prevFrameIndex].image;
 		memBar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
 
 		toRead[7] = memBar;
@@ -2268,6 +2591,101 @@ int main() {
     pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
     vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
 
+    {
+        VkImageMemoryBarrier2 uiBarr{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        uiBarr.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        uiBarr.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT|VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        uiBarr.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        uiBarr.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        uiBarr.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        uiBarr.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        uiBarr.image = swapchain.images[imageIndex];
+        uiBarr.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+
+        VkDependencyInfo UIDep{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        UIDep.imageMemoryBarrierCount = 1;
+        UIDep.pImageMemoryBarriers = &uiBarr;
+        vkCmdPipelineBarrier2(commandBuffer,&UIDep);
+    }
+
+    static const nk_draw_vertex_layout_element vLayout[] = {
+        {NK_VERTEX_POSITION,NK_FORMAT_FLOAT,offsetof(UIVertex,pos)},
+        {NK_VERTEX_TEXCOORD,NK_FORMAT_FLOAT,offsetof(UIVertex,uv)},
+        {NK_VERTEX_COLOR,NK_FORMAT_R8G8B8A8,offsetof(UIVertex,col)},
+        {NK_VERTEX_LAYOUT_END}
+    };
+
+    nk_convert_config UIConfig{};
+    UIConfig.vertex_layout = vLayout;
+    UIConfig.vertex_size = sizeof(UIVertex);
+    UIConfig.vertex_alignment = alignof(UIVertex);
+    UIConfig.tex_null = nkNull;
+    UIConfig.circle_segment_count = 22;
+    UIConfig.curve_segment_count = 22;
+    UIConfig.arc_segment_count = 22;
+    UIConfig.global_alpha = 1.f;
+    UIConfig.shape_AA = NK_ANTI_ALIASING_ON;
+    UIConfig.line_AA = NK_ANTI_ALIASING_ON;
+
+    nk_buffer nkCommands, nkVerts, nkIndices;
+    nk_buffer_init_default(&nkCommands);
+    nk_buffer_init_fixed(&nkVerts,nkVertBuffers[frameIndex].info.pMappedData,NK_MAX_VERTS);
+    nk_buffer_init_fixed(&nkIndices,nkIndexBuffers[frameIndex].info.pMappedData,NK_MAX_IDX);
+    nk_convert(&nkContext,&nkCommands,&nkVerts,&nkIndices,&UIConfig);
+
+    VkRenderingAttachmentInfo UIInfoAttachment{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    UIInfoAttachment.imageView = swapchain.imageViews[imageIndex];
+    UIInfoAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    UIInfoAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    UIInfoAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    UIInfoAttachment.clearValue.color = colorClear;
+
+    VkRenderingInfo UIInfo = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO};
+    UIInfo.renderArea.extent.width = swapchain.width;
+    UIInfo.renderArea.extent.height = swapchain.height;
+    UIInfo.layerCount = 1;
+    UIInfo.colorAttachmentCount = 1;
+    UIInfo.pColorAttachments = &UIInfoAttachment;
+    UIInfo.pDepthAttachment = VK_NULL_HANDLE;
+
+    vkCmdBeginRendering(commandBuffer,&UIInfo);
+
+    vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,UIProgram.pipeline);
+    VkDeviceSize buffOffset = 0;
+    vkCmdBindVertexBuffers(commandBuffer,0,1,&nkVertBuffers[frameIndex].buffer,&buffOffset);
+    vkCmdBindIndexBuffer(commandBuffer,nkIndexBuffers[frameIndex].buffer,0,VK_INDEX_TYPE_UINT16);
+
+    UIConstants uiPushes = {{2.f/swapchain.width,2.f/swapchain.height},{-1.f,-1.f},0};
+    VkViewport uiViewport = {0,0,float(swapchain.width),float(swapchain.height),0,1};
+
+    vkCmdSetViewport(commandBuffer,0,1,&uiViewport);
+    vkCmdSetCullMode(commandBuffer, VK_CULL_MODE_NONE);
+    vkCmdSetDepthTestEnable(commandBuffer, VK_FALSE);
+    vkCmdSetDepthWriteEnable(commandBuffer, VK_FALSE);
+
+    uint32_t idxOffset = 0;
+    const nk_draw_command* drawCommand;
+    nk_draw_foreach(drawCommand,&nkContext,&nkCommands){
+        if(!drawCommand->elem_count) continue;
+        uiPushes.texID = (uint32_t)drawCommand->texture.id;
+
+        VkRect2D screenClip = {{(int32_t)std::max(drawCommand->clip_rect.x,0.f),
+            (int32_t)std::max(drawCommand->clip_rect.y,0.f)},
+            {(uint32_t)drawCommand->clip_rect.w,(uint32_t)drawCommand->clip_rect.h}};
+        vkCmdSetScissor(commandBuffer,0,1,&screenClip);
+
+        pushDescriptorsAndConstants(commandBuffer, frameDesc, UIProgram,{},uiPushes);
+
+        vkCmdDrawIndexed(commandBuffer,drawCommand->elem_count,1,idxOffset,0,0);
+        idxOffset += drawCommand->elem_count;
+    }
+
+    nk_buffer_free(&nkCommands);
+    nk_clear(&nkContext);
+
+    vkCmdEndRendering(commandBuffer);
+
 	transitionImage(commandBuffer, swapchain.images[imageIndex],
     	VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -2280,7 +2698,7 @@ int main() {
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         availableSemaphore[frameIndex]);
     VkSemaphoreSubmitInfo signalInfo = createSemaphoreSubmitInfo(
-        VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, presentSemaphore[imageIndex]);
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, presentSemaphore[imageIndex]);
     VkSubmitInfo2 submitInfo =
         createDrawSubmitInfo(&commandBufferSubmitInfo, &signalInfo, &waitInfo);
 

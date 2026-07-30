@@ -14,8 +14,7 @@ float2 octEncode2(float2 v){
     return (1.0-abs(v.yx))*sign;
 }
 
-PixelOutput main(VertexOutput input)
-{
+PixelOutput main(VertexOutput input){
     Material mat = Materials[input.materialIndex];
 
     float4 baseColor = mat.diffuseFactor;

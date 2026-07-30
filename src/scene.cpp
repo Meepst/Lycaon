@@ -490,9 +490,48 @@ static PrimitiveResult processPrimitive(const cgltf_primitive& prim,
 
 } // anonymous namespace
 
+static Camera makeDefaultCamera(const Scene& scene, float aspect){
+    vec3 minRange(FLT_MAX), maxRange(-FLT_MAX);
+
+    for(const MeshDraw& draw : scene.draws){
+        const Mesh& mesh = scene.meshes[draw.meshIndex];
+
+        vec3 corner = draw.position+draw.orientation*(mesh.center*draw.scale);
+        float radius = mesh.radius*draw.scale;
+
+        minRange = glm::min(minRange,corner-vec3(radius));
+        maxRange = glm::max(maxRange,corner+vec3(radius));
+    }
+
+    Camera cam{};
+    cam.fovY = glm::radians(60.f);
+
+    if(scene.draws.empty() || !(minRange.x<=maxRange.x)){
+        cam.position = vec3(0.f,1.f,3.f);
+        cam.orientation = glm::quat(1,0,0,0);
+        cam.znear = 0.01f;
+        return cam;
+    }
+
+    vec3 center = (minRange+maxRange)*0.5f;
+    float radius = glm::length(maxRange-minRange)*0.5f;
+    radius = std::max(radius,1e-3f);
+
+    float fovX = 2.f*atanf(tanf(cam.fovY*0.5f)*aspect);
+    float fitFov = std::min(cam.fovY,fovX);
+    float dist = radius/sinf(fitFov*0.5f)*1.1f;
+
+    vec3 dir = glm::normalize(vec3(0.6f,0.35f,0.7f));
+    cam.position = center+dir*dist;
+    cam.orientation = glm::quatLookAt(glm::normalize(center-cam.position),vec3(0,1,0));
+
+    cam.znear = std::max((dist-radius)*0.1f,radius*1e-4f);
+    return cam;
+}
+
 bool loadGltf(const std::string& filepath, Scene& scene,
               size_t maxVerticesPerMeshlet,
-              size_t maxTrianglesPerMeshlet)
+              size_t maxTrianglesPerMeshlet, float aspect)
 {
 	using namespace cgltf_util;
 
@@ -508,37 +547,6 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 		std::fprintf(stderr, "[gltf] Failed to load buffers: %s\n", filepath.c_str());
 		cgltf_free(data);
 		return false;
-	}
-
-	scene.camera = {};
-	for(cgltf_size i=0;i<data->nodes_count;i++){
-	    const cgltf_node& node = data->nodes[i];
-		if(!node.camera){
-		    continue;
-		}
-
-		cgltf_float m[16];
-		cgltf_node_transform_world(&node, m);
-		glm::mat4 world = glm::make_mat4(m);
-
-		scene.camera.position = glm::vec3(world[3]);
-
-		glm::mat3 rot = glm::mat3(world);
-		rot[0] = glm::normalize(rot[0]);
-        rot[1] = glm::normalize(rot[1]);
-        rot[2] = glm::normalize(rot[2]);
-        scene.camera.orientation = glm::quat_cast(rot);
-
-        const cgltf_camera* cam = node.camera;
-        if(cam->type == cgltf_camera_type_perspective){
-            scene.camera.fovY = cam->data.perspective.yfov;
-            scene.camera.znear = cam->data.perspective.znear;
-        }else{
-            scene.camera.fovY = glm::radians(45.0f);
-            scene.camera.znear = cam->data.orthographic.znear;
-        }
-
-        break;
 	}
 
 	scene.samplers.resize(data->samplers_count);
@@ -860,6 +868,42 @@ bool loadGltf(const std::string& filepath, Scene& scene,
 				scene.draws[di].orientation = rotation;
 			}
 		}
+	}
+
+	scene.camera = {};
+	bool selectedCam = false;
+	for(cgltf_size i=0;i<data->nodes_count;i++){
+	    const cgltf_node& node = data->nodes[i];
+		if(!node.camera){
+		    continue;
+		}
+		selectedCam = true;
+		cgltf_float m[16];
+		cgltf_node_transform_world(&node, m);
+		glm::mat4 world = glm::make_mat4(m);
+
+		scene.camera.position = glm::vec3(world[3]);
+
+		glm::mat3 rot = glm::mat3(world);
+		rot[0] = glm::normalize(rot[0]);
+        rot[1] = glm::normalize(rot[1]);
+        rot[2] = glm::normalize(rot[2]);
+        scene.camera.orientation = glm::quat_cast(rot);
+
+        const cgltf_camera* cam = node.camera;
+        if(cam->type == cgltf_camera_type_perspective){
+            scene.camera.fovY = cam->data.perspective.yfov;
+            scene.camera.znear = cam->data.perspective.znear;
+        }else{
+            scene.camera.fovY = glm::radians(45.0f);
+            scene.camera.znear = cam->data.orthographic.znear;
+        }
+
+        break;
+	}
+
+	if(!selectedCam){
+	    scene.camera = makeDefaultCamera(scene, aspect);
 	}
 
 	cgltf_free(data);

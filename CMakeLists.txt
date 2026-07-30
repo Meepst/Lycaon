@@ -18,16 +18,24 @@ set_target_properties(Lycaon PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YE
 
 set_target_properties(Lycaon PROPERTIES ENVIRONMENT "DISABLE_VULKAN_OBS_CAPTURE=1")
 
-target_compile_definitions(Lycaon PRIVATE GLFW_INCLUDE_VULKAN GLM_FORCE_XYZW_ONLY GLM_FORCE_QUAT_DATA_XYZW GLM_FORCE_QUAT_CTOR_XYZW GLM_FORCE_DEPTH_ZERO_TO_ONE)
+target_compile_definitions(Lycaon PRIVATE
+  GLFW_INCLUDE_VULKAN GLM_FORCE_XYZW_ONLY
+  GLM_FORCE_QUAT_DATA_XYZW GLM_FORCE_QUAT_CTOR_XYZW
+  GLM_FORCE_DEPTH_ZERO_TO_ONE NK_INCLUDE_FIXED_TYPES
+  NK_INCLUDE_DEFAULT_ALLOCATOR NK_INCLUDE_STANDARD_VARARGS
+    NK_INCLUDE_VERTEX_BUFFER_OUTPUT
+    NK_INCLUDE_FONT_BAKING
+    NK_INCLUDE_DEFAULT_FONT)
 target_include_directories(Lycaon PRIVATE
-     dependencies/glm dependencies/cgltf dependencies/fpng/src/ dependencies/stb dependencies/bcdec "$ENV{VULKAN_SDK}/Include")
+    dependencies/glm dependencies/nuklear dependencies/cgltf dependencies/fpng/src/ dependencies/stb dependencies/bcdec "$ENV{VULKAN_SDK}/Include")
 target_link_directories(Lycaon PRIVATE "$ENV{VULKAN_SDK}/Lib")
 
 target_sources(Lycaon PRIVATE dependencies/fpng/src/fpng.cpp)
 
 if(WIN32)
   target_compile_definitions(Lycaon PRIVATE GLFW_EXPOSE_NATIVE_WIN32)
-  target_compile_definitions(Lycaon PRIVATE WIN32_LEAN_and_MEAN NOMINMAX)
+  target_compile_definitions(Lycaon PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_definitions(Lycaon PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 add_subdirectory(dependencies/vk-bootstrap)
@@ -41,6 +49,11 @@ target_link_libraries(Lycaon PRIVATE volk_headers)
 
 add_subdirectory(dependencies/meshoptimizer)
 target_link_libraries(Lycaon PRIVATE meshoptimizer)
+
+set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
+add_subdirectory($ENV{TRACY_PATH} tracy_build)
+target_link_libraries(Lycaon PRIVATE Tracy::TracyClient)
 
 set(SPIRV_REFLECT_EXECUTABLE OFF CACHE BOOL "" FORCE)
 set(SPIRV_REFLECT_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -77,15 +90,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/$<CONFIG>")
 
 function(get_hlsl_profile FILENAME OUT_PROFILE OUT_ENTRY)
   get_filename_component(NAME_ONLY ${FILENAME} NAME)
+  set(${OUT_ENTRY} "main" PARENT_SCOPE)
   if(NAME_ONLY MATCHES "\\.vert\\.")
     set(${OUT_PROFILE} "vs_6_6" PARENT_SCOPE)
-    set(${OUT_ENTRY} "main" PARENT_SCOPE)
   elseif(NAME_ONLY MATCHES "\\.frag\\." OR NAME_ONLY MATCHES "\\.pixel\\.")
     set(${OUT_PROFILE} "ps_6_6" PARENT_SCOPE)
-    set(${OUT_ENTRY} "main" PARENT_SCOPE)
   elseif(NAME_ONLY MATCHES "\\.mesh\\.")
     set(${OUT_PROFILE} "ms_6_5" PARENT_SCOPE)
-    set(${OUT_ENTRY} "main" PARENT_SCOPE)
   elseif(NAME_ONLY MATCHES "\\.comp\\.")
     set(${OUT_PROFILE} "cs_6_6" PARENT_SCOPE)
   elseif(NAME_ONLY MATCHES "\\.geom\\.")
@@ -117,6 +128,8 @@ endfunction()
 foreach(HLSL ${HLSL_SOURCE_FILES})
   get_filename_component(STEM ${HLSL} NAME_WLE)
   set(SPIRV "${SPIRV_OUTPUT_DIR}/${STEM}.spv")
+  set(PROFILE "")
+  set(ENTRY "")
   get_hlsl_profile(${HLSL} PROFILE ENTRY)
 
   if(PROFILE STREQUAL "lib_6_6")
@@ -128,7 +141,7 @@ foreach(HLSL ${HLSL_SOURCE_FILES})
   add_custom_command(
         OUTPUT ${SPIRV}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SPIRV_OUTPUT_DIR}"
-        COMMAND ${DXC} -spirv -HV 2021 -Zi -Qembed_debug -fspv-extension=SPV_EXT_mesh_shader
+        COMMAND ${DXC} -spirv -HV 2021 -fspv-extension=SPV_EXT_mesh_shader
         -fspv-extension=SPV_EXT_descriptor_indexing -fspv-debug=vulkan-with-source
         -fspv-extension=SPV_KHR_ray_query -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-target-env=vulkan1.3
         -T ${PROFILE} ${DXC_ENTRY_FLAG} ${HLSL} -Fo ${SPIRV}

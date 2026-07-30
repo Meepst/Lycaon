@@ -145,7 +145,7 @@ struct Scene
 /// maxVerticesPerMeshlet / maxTrianglesPerMeshlet control meshlet sizing.
 bool loadGltf(const std::string& filepath, Scene& scene,
               size_t maxVerticesPerMeshlet  = 64,
-              size_t maxTrianglesPerMeshlet = 124);
+              size_t maxTrianglesPerMeshlet = 124, float aspect = 1.f);
 
 /// Print a summary of the loaded scene to stdout.
 void printSceneSummary(const Scene& scene);
