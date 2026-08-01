@@ -1,5 +1,5 @@
 # **Lycaon**
-<img src="https://github.com/Meepst/Lycaon/blob/main/screenshots/sample1.png" alt="Sample Image 1" width="30%"> <img src="https://github.com/Meepst/Lycaon/blob/main/screenshots/sample2.png" alt="Sample Image 2" width="30%">
+<img src="https://github.com/Meepst/Lycaon/blob/main/screenshots/sample1.png" alt="Sample Image 1" width="30%"> <img src="https://github.com/Meepst/Lycaon/blob/main/screenshots/sample2.png" alt="Sample Image 2" width="30%"> <img src="https://github.com/Meepst/Lycaon/blob/main/screenshots/sample3.png" alt="Sample Image 3" width="30%">
 
 A real-time Vulkan 1.4 renderer written in C++20, featuring a GPU-driven mesh shading pipeline and ReSTIR-based direct lighting with hardware ray tracing (ray queries).
  
