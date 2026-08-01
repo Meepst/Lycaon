@@ -10,7 +10,7 @@
 #include <iostream>
 #include <filesystem>
 
-#include <tracy/Tracy.hpp>
+//#include <tracy/Tracy.hpp>
 
 #define NK_IMPLEMENTATION
 #include "nuklear.h"
@@ -57,6 +57,59 @@ struct Reservoir{
 struct Frame{
     uint32_t count;
     uint32_t resetHistory;
+};
+
+struct FrameStats{
+    static const int CAP = 512;
+    float samples[CAP]={};
+    int count = 0;
+    int head = 0;
+    double prev = 0.0;
+    bool valid = false;
+    double totalMs = 0.0;
+    float avgMs = 0.f;
+    float lowMs = 0.f;
+
+    void invalidate(){
+        valid = false;
+        count = 0;
+        head = 0;
+        totalMs = 0.0;
+    }
+
+    void push(double now){
+        if(!valid){
+            prev = now;
+            valid = true;
+            return;
+        }
+
+        double dt = now-prev;
+        prev = now;
+        if(dt <= 0.0) return;
+
+        samples[head] = float(dt*1000.0);
+        head = (head+1)%CAP;
+        if(count < CAP) count++;
+
+        totalMs += dt;
+        if(totalMs < 0.25) return;
+        totalMs = 0.0;
+
+        double sum = 0.0;
+        for(int i=0;i<count;i++){
+            sum += samples[i];
+        }
+
+        avgMs = float(sum/count);
+
+        float sorted[CAP];
+        memcpy(sorted,samples,count*sizeof(float));
+        int k = (count*99)/100;
+        std::nth_element(sorted,sorted+k,sorted+count);
+        lowMs = sorted[k];
+    }
+
 };
 
 struct alignas(64) Globals{
@@ -2012,7 +2065,7 @@ int main(int argc, char** argv) {
   Image accumTargets[FRAMES_IN_FLIGHT] = {};
   Image HistPos[FRAMES_IN_FLIGHT] = {};
 
-  double elapsedTime = glfwGetTime();
+  FrameStats cpuStats{};
 
   Frame frameInfo = {};
 
@@ -2024,11 +2077,6 @@ int main(int argc, char** argv) {
   struct nk_rect uiBounds = {20,20,240,140};
   int uiInit = 0;
   while (!glfwWindowShouldClose(window)) {
-    ZoneScoped;
-    double currTime = glfwGetTime();
-    float dt = float(currTime-elapsedTime);
-    elapsedTime = currTime;
-
     glfwPollEvents();
 
     //nk_input_begin(&nkContext);
@@ -2141,6 +2189,7 @@ int main(int argc, char** argv) {
 
       initHistory = true;
       frameInfo.resetHistory = 1;
+      cpuStats.invalidate();
     }
 
     if(swapchainStatus == Swapchain_Resized || !uiInit){
@@ -2171,7 +2220,11 @@ int main(int argc, char** argv) {
         NK_WINDOW_BORDER|NK_WINDOW_TITLE|NK_WINDOW_MOVABLE|
         NK_WINDOW_MINIMIZABLE|NK_WINDOW_SCALABLE)){
             nk_layout_row_dynamic(&nkContext,20,1);
-            nk_labelf(&nkContext,NK_TEXT_LEFT,"%.1f FPS (%.2f ms)",1.0f/dt,dt*1000.0f);
+            if(cpuStats.avgMs > 0.f){
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"%.1f FPS (%.2f lowMs)",1000.f/cpuStats.avgMs,cpuStats.lowMs);
+            }else{
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"--- FPS (--- lowMs)");
+            }
             nk_labelf(&nkContext,NK_TEXT_LEFT,"T: Toggle UI");
             nk_labelf(&nkContext,NK_TEXT_LEFT,"F: Screenshot");
             nk_labelf(&nkContext,NK_TEXT_LEFT,"Right Click: Enables moving camera view");
@@ -2710,6 +2763,8 @@ int main(int argc, char** argv) {
         needScreenshot = false;
         vkDeviceWaitIdle(m_device);
 
+        cpuStats.invalidate();
+
         std::time_t t = std::time(nullptr);
         char name[64];
         std::strftime(name,sizeof(name),"screenshots/shot_%Y%m%d_%H%M%S.png",
@@ -2729,6 +2784,7 @@ int main(int argc, char** argv) {
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pImageIndices = &imageIndex;
 
+    cpuStats.push(glfwGetTime());
     VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
 
     frameInfo.resetHistory = 0;
