@@ -69,12 +69,34 @@ struct FrameStats{
     double totalMs = 0.0;
     float avgMs = 0.f;
     float lowMs = 0.f;
+    double latchPrev = 0.0;
 
     void invalidate(){
         valid = false;
         count = 0;
         head = 0;
         totalMs = 0.0;
+    }
+
+    void addSample(float ms, double now){
+        samples[head] = ms;
+        head = (head+1)%CAP;
+        if(count < CAP) count++;
+
+        if(latchPrev == 0.0) latchPrev = now;
+        if(now-latchPrev<0.25) return;
+        latchPrev = now;
+
+        double sum = 0.0;
+        for(int i=0;i<CAP;i++)
+            sum+=samples[i];
+        avgMs = float(sum/count);
+
+        float sorted[CAP];
+        memcpy(sorted,samples,count*sizeof(float));
+        int k = (count*99)/100;
+        std::nth_element(sorted,sorted+k,sorted+count);
+        lowMs = sorted[k];
     }
 
     void push(double now){
@@ -86,28 +108,10 @@ struct FrameStats{
 
         double dt = now-prev;
         prev = now;
+
         if(dt <= 0.0) return;
 
-        samples[head] = float(dt*1000.0);
-        head = (head+1)%CAP;
-        if(count < CAP) count++;
-
-        totalMs += dt;
-        if(totalMs < 0.25) return;
-        totalMs = 0.0;
-
-        double sum = 0.0;
-        for(int i=0;i<count;i++){
-            sum += samples[i];
-        }
-
-        avgMs = float(sum/count);
-
-        float sorted[CAP];
-        memcpy(sorted,samples,count*sizeof(float));
-        int k = (count*99)/100;
-        std::nth_element(sorted,sorted+k,sorted+count);
-        lowMs = sorted[k];
+        addSample(float(dt*1000.0), now);
     }
 
 };
@@ -155,6 +159,7 @@ VkPhysicalDevice m_physicalDevice;
 VkDevice m_device;
 VmaAllocator m_vmaAllocator;
 bool needScreenshot = false;
+bool toggleUI = true;
 
 void drawBackground(VkCommandBuffer commandBuffer, VkImage image) {
   VkClearColorValue clearValue{};
@@ -1054,6 +1059,12 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 			glfwSetWindowShouldClose(window, true);
 		}else if(key == GLFW_KEY_F){
             needScreenshot = true;
+		}else if(key == GLFW_KEY_T){
+		    if(toggleUI){
+				toggleUI = false;
+			}else{
+			    toggleUI = true;
+			}
 		}
     }
 }
@@ -1871,6 +1882,12 @@ int main(int argc, char** argv) {
   nk_font_atlas_end(&nkAtlas,nk_handle_id((int)fontSlot),&nkNull);
   nk_init_default(&nkContext,&nkAtlas.default_font->handle);
 
+  nkContext.style.window.fixed_background = nk_style_item_color(nk_rgba(45, 45, 45, 160));
+  nkContext.style.window.header.normal =
+      nk_style_item_color(nk_rgba(40, 40, 40, 160));
+  nkContext.style.window.header.hover  = nk_style_item_color(nk_rgba(40, 40, 40, 180));
+  nkContext.style.window.header.active = nk_style_item_color(nk_rgba(40, 40, 40, 180));
+
   //nk_font_atlas_end(&nkAtlas,nk_handle_id)
   destroyBuffer(m_vmaAllocator,imageStaging);
 
@@ -2058,6 +2075,23 @@ int main(int argc, char** argv) {
       }
   });
 
+  VkQueryPool timeStampPool = 0;
+
+  VkQueryPoolCreateInfo queryPoolInfo{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  queryPoolInfo.queryCount = 2*FRAMES_IN_FLIGHT;
+  VK_CHECK(vkCreateQueryPool(m_device,&queryPoolInfo,nullptr,&timeStampPool));
+
+  uint32_t familyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice,&familyCount,nullptr);
+  std::vector<VkQueueFamilyProperties> queueFamilies(familyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice,&familyCount,queueFamilies.data());
+
+  uint32_t timeSampleBits = queueFamilies[queueIndex].timestampValidBits;
+  assert(timeSampleBits > 0);
+  uint64_t timeSampleMask = (timeSampleBits>=64)?~0ull:((1ull<<timeSampleBits)-1);
+  float timeSamplePeriod = props2.properties.limits.timestampPeriod;
+
   fpng::fpng_init();
 
   Image gbufferTargets[FRAMES_IN_FLIGHT][gbufferCount] = {};
@@ -2066,6 +2100,11 @@ int main(int argc, char** argv) {
   Image HistPos[FRAMES_IN_FLIGHT] = {};
 
   FrameStats cpuStats{};
+  FrameStats gpuStats{};
+
+  bool queryPending[FRAMES_IN_FLIGHT] = {};
+
+  double elapsedTime = glfwGetTime();
 
   Frame frameInfo = {};
 
@@ -2074,9 +2113,14 @@ int main(int argc, char** argv) {
   int frameIndex = 0;
   int prevFrameIndex = 0;
   bool initHistory = false;
-  struct nk_rect uiBounds = {20,20,240,140};
+  double gpuMs = 0.0;
+  struct nk_rect uiBounds = {20,20,240,420};
   int uiInit = 0;
   while (!glfwWindowShouldClose(window)) {
+    double currTime = glfwGetTime();
+    double dt = currTime - elapsedTime;
+    elapsedTime = currTime;
+
     glfwPollEvents();
 
     //nk_input_begin(&nkContext);
@@ -2190,6 +2234,7 @@ int main(int argc, char** argv) {
       initHistory = true;
       frameInfo.resetHistory = 1;
       cpuStats.invalidate();
+      gpuStats.invalidate();
     }
 
     if(swapchainStatus == Swapchain_Resized || !uiInit){
@@ -2216,26 +2261,43 @@ int main(int argc, char** argv) {
         uiInit = 1;
     }
 
-    if(nk_begin(&nkContext,"Lycaon",uiBounds,
-        NK_WINDOW_BORDER|NK_WINDOW_TITLE|NK_WINDOW_MOVABLE|
-        NK_WINDOW_MINIMIZABLE|NK_WINDOW_SCALABLE)){
-            nk_layout_row_dynamic(&nkContext,20,1);
-            if(cpuStats.avgMs > 0.f){
-                nk_labelf(&nkContext,NK_TEXT_LEFT,"%.1f FPS (%.2f lowMs)",1000.f/cpuStats.avgMs,cpuStats.lowMs);
-            }else{
-                nk_labelf(&nkContext,NK_TEXT_LEFT,"--- FPS (--- lowMs)");
+    if(toggleUI){
+        if(nk_begin(&nkContext,"Lycaon",uiBounds,
+            NK_WINDOW_BORDER|NK_WINDOW_TITLE|NK_WINDOW_MOVABLE|
+            NK_WINDOW_MINIMIZABLE|NK_WINDOW_SCALABLE)){
+                nk_layout_row_dynamic(&nkContext,20,1);
+                if(cpuStats.avgMs > 0.f){
+                    nk_labelf(&nkContext,NK_TEXT_LEFT,"CPU %.1f FPS (low %.2f ms)",1000.f/cpuStats.avgMs,cpuStats.lowMs);
+                }else{
+                    nk_labelf(&nkContext,NK_TEXT_LEFT,"CPU --- FPS (low --- ms)");
+                }
+                if(gpuStats.avgMs > 0.f){
+                    nk_labelf(&nkContext,NK_TEXT_LEFT,"GPU avg %.1f ms(low %.2f ms)",gpuStats.avgMs,gpuStats.lowMs);
+                }else{
+                    nk_labelf(&nkContext,NK_TEXT_LEFT,"GPU avg --- ms (low --- ms)");
+                }
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"T: Toggle UI");
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"F: Screenshot");
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"ESC: Quit");
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"Right Click: Hold to move");
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"WASD: To move camera");
             }
-            nk_labelf(&nkContext,NK_TEXT_LEFT,"T: Toggle UI");
-            nk_labelf(&nkContext,NK_TEXT_LEFT,"F: Screenshot");
-            nk_labelf(&nkContext,NK_TEXT_LEFT,"Right Click: Enables moving camera view");
-            nk_labelf(&nkContext,NK_TEXT_LEFT,"WASD: To move camera");
-        }
-    nk_end(&nkContext);
+        nk_end(&nkContext);
+    }
 
     VkResult fenceResult = vkWaitForFences(m_device, 1, &renderFences[frameIndex], VK_TRUE,
                              UINT64_MAX);
     if(fenceResult == VK_ERROR_DEVICE_LOST){
         assert(!"device lost\n");
+    }
+
+    if(queryPending[frameIndex]){
+        queryPending[frameIndex] = false;
+        uint64_t ts[2];
+        VK_CHECK(vkGetQueryPoolResults(m_device,timeStampPool,frameIndex*2,2,
+            sizeof(ts),ts,sizeof(uint64_t),VK_QUERY_RESULT_64_BIT));
+        gpuMs = ((ts[1]&timeSampleMask)-(ts[0]&timeSampleMask))&timeSampleMask;
+        gpuStats.addSample(float(double(gpuMs)*timeSamplePeriod*1e-6),currTime);
     }
 
     FrameDescriptors frameDesc = {};
@@ -2268,6 +2330,10 @@ int main(int argc, char** argv) {
     cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &cmdBufferBeginInfo));
+
+    vkCmdResetQueryPool(commandBuffer,timeStampPool,frameIndex*2,2);
+    vkCmdWriteTimestamp2(commandBuffer,VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        timeStampPool,frameIndex*2);
 
     if(tlasNeedsRebuild){
         buildTlas(m_device,commandBuffer,tlas,tlasBuffer,tlasStagingBuffer,
@@ -2743,6 +2809,9 @@ int main(int argc, char** argv) {
     	VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
+	vkCmdWriteTimestamp2(commandBuffer,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,timeStampPool,
+	    frameIndex*2+1);
+	queryPending[frameIndex] = true;
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
     VkCommandBufferSubmitInfo commandBufferSubmitInfo =
@@ -2764,6 +2833,7 @@ int main(int argc, char** argv) {
         vkDeviceWaitIdle(m_device);
 
         cpuStats.invalidate();
+        gpuStats.invalidate();
 
         std::time_t t = std::time(nullptr);
         char name[64];
@@ -2784,7 +2854,7 @@ int main(int argc, char** argv) {
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pImageIndices = &imageIndex;
 
-    cpuStats.push(glfwGetTime());
+    cpuStats.push(currTime);
     VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
 
     frameInfo.resetHistory = 0;
@@ -2794,6 +2864,8 @@ int main(int argc, char** argv) {
   }
 
   vkDeviceWaitIdle(m_device);
+
+  vkDestroyQueryPool(m_device,timeStampPool,nullptr);
 
   for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
     for (Image& image : gbufferTargets[i]) {
