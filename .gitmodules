@@ -28,3 +28,6 @@
 [submodule "dependencies/nuklear"]
 	path = dependencies/nuklear
 	url = git@github.com:Immediate-Mode-UI/Nuklear.git
+[submodule "dependencies/volk"]
+	path = dependencies/volk
+	url = git@github.com:zeux/volk.git
