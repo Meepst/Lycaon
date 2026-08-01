@@ -79,13 +79,13 @@
   ],
   "images": [
     {
-      "uri": "BarramundiFish_baseColor.png"
+      "uri": "BarramundiFish_baseColor.dds"
     },
     {
-      "uri": "BarramundiFish_occlusionRoughnessMetallic.png"
+      "uri": "BarramundiFish_occlusionRoughnessMetallic.dds"
     },
     {
-      "uri": "BarramundiFish_normal.png"
+      "uri": "BarramundiFish_normal.dds"
     }
   ],
   "meshes": [
