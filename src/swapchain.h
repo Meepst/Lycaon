@@ -17,6 +17,6 @@ enum SwapchainStatus{
 };
 
 VkFormat getSwapchainFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
-void createSwapchain(Swapchain& result, VkFormat format, GLFWwindow* window, vkb::SwapchainBuilder swapchainBuilder, VkSwapchainKHR old);
+void createSwapchain(Swapchain& result, VkFormat format, GLFWwindow* window, vkb::SwapchainBuilder swapchainBuilder, VkSwapchainKHR old, bool vsyncEnabled);
 SwapchainStatus updateSwapchain(Swapchain& result, VkDevice device, GLFWwindow* window,
-    vkb::SwapchainBuilder swapchainBuilder, VkFormat format);
+    vkb::SwapchainBuilder swapchainBuilder, VkFormat format, bool vsyncEnabled);

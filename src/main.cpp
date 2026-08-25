@@ -10,7 +10,8 @@
 #include <iostream>
 #include <filesystem>
 
-//#include <tracy/Tracy.hpp>
+#include <tracy/Tracy.hpp>
+#include <tracy/TracyVulkan.hpp>
 
 #define NK_IMPLEMENTATION
 #include "nuklear.h"
@@ -160,6 +161,8 @@ VkDevice m_device;
 VmaAllocator m_vmaAllocator;
 bool needScreenshot = false;
 bool toggleUI = true;
+bool vsyncEnabled = true;
+bool rebuildSwapchain = true;
 
 void drawBackground(VkCommandBuffer commandBuffer, VkImage image) {
   VkClearColorValue clearValue{};
@@ -1065,6 +1068,14 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 			}else{
 			    toggleUI = true;
 			}
+		}else if(key == GLFW_KEY_V){
+            if(vsyncEnabled){
+                vsyncEnabled = false;
+                rebuildSwapchain = true;
+            }else{
+                vsyncEnabled = true;
+                rebuildSwapchain = true;
+            }
 		}
     }
 }
@@ -1397,7 +1408,7 @@ int main(int argc, char** argv) {
 
   vkb::InstanceBuilder builder;
 
-  bool validation_layers = true;
+  bool validation_layers = false;
 #ifndef _DEBUG
   validation_layers = true;
 #endif
@@ -1523,7 +1534,7 @@ int main(int argc, char** argv) {
       VK_IMAGE_USAGE_STORAGE_BIT);
 
   Swapchain swapchain{};
-  createSwapchain(swapchain, swapchainFormat, window, swapchainBuilder, {});
+  createSwapchain(swapchain, swapchainFormat, window, swapchainBuilder, {},vsyncEnabled);
 
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
@@ -2092,6 +2103,9 @@ int main(int argc, char** argv) {
   uint64_t timeSampleMask = (timeSampleBits>=64)?~0ull:((1ull<<timeSampleBits)-1);
   float timeSamplePeriod = props2.properties.limits.timestampPeriod;
 
+  TracyVkCtx tracyVk = TracyVkContext(m_physicalDevice,m_device,graphicsQueue,initCommandBuffer);
+  TracyVkContextName(tracyVk,"Graphics",0);
+
   fpng::fpng_init();
 
   Image gbufferTargets[FRAMES_IN_FLIGHT][gbufferCount] = {};
@@ -2117,11 +2131,16 @@ int main(int argc, char** argv) {
   struct nk_rect uiBounds = {20,20,240,420};
   int uiInit = 0;
   while (!glfwWindowShouldClose(window)) {
+    FrameMark;
     double currTime = glfwGetTime();
     double dt = currTime - elapsedTime;
     elapsedTime = currTime;
 
-    glfwPollEvents();
+    ZoneScopedN("Frame");
+
+    {
+        ZoneScopedN("Poll");
+        glfwPollEvents();
 
     //nk_input_begin(&nkContext);
     if(glfwGetInputMode(window,GLFW_CURSOR)==GLFW_CURSOR_DISABLED){
@@ -2145,15 +2164,20 @@ int main(int argc, char** argv) {
 		frameInfo.resetHistory = 1;
     }
     //nk_input_end(&nkContext);
+    }
 
+    {
+        ZoneScopedN("SwapchainCheck");
     SwapchainStatus swapchainStatus = updateSwapchain(
-        swapchain, m_device, window, swapchainBuilder, swapchainFormat);
+        swapchain, m_device, window, swapchainBuilder, swapchainFormat, vsyncEnabled);
     if (swapchainStatus == Swapchain_NotReady) {
         nk_clear(&nkContext);
         continue;
     }
 
-    if (swapchainStatus == Swapchain_Resized || !depthTargets[0].image) {
+    if (swapchainStatus == Swapchain_Resized || !depthTargets[0].image || rebuildSwapchain) {
+      VK_CHECK(vkDeviceWaitIdle(m_device));
+
       printf("Swapchain resized: %dx%d\n", swapchain.width, swapchain.height);
       for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
           for(Image& img : gbufferTargets[i]){
@@ -2223,14 +2247,7 @@ int main(int argc, char** argv) {
           img = createImage(m_vmaAllocator,m_device,VkExtent3D(swapchain.width,swapchain.height,1),depthFormat,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, false);
 
-      for(uint32_t i = 0;i<swapchain.imageViews.size();i++){
-          if(swapchain.imageViews[i]){
-              vkDestroyImageView(m_device, swapchain.imageViews[i],0);
-          }
-          VkImageViewCreateInfo ivinfo = createImageViewInfo(swapchainFormat, swapchain.images[i], VK_IMAGE_ASPECT_COLOR_BIT);
-          VK_CHECK(vkCreateImageView(m_device,&ivinfo,nullptr,&swapchain.imageViews[i]));
-      }
-
+      rebuildSwapchain = false;
       initHistory = true;
       frameInfo.resetHistory = 1;
       cpuStats.invalidate();
@@ -2261,6 +2278,10 @@ int main(int argc, char** argv) {
         uiInit = 1;
     }
 
+    }
+
+    {
+        ZoneScopedN("NuklearUI");
     if(toggleUI){
         if(nk_begin(&nkContext,"Lycaon",uiBounds,
             NK_WINDOW_BORDER|NK_WINDOW_TITLE|NK_WINDOW_MOVABLE|
@@ -2284,12 +2305,18 @@ int main(int argc, char** argv) {
             }
         nk_end(&nkContext);
     }
+    }
 
+    {
+        ZoneScopedN("Fence");
     VkResult fenceResult = vkWaitForFences(m_device, 1, &renderFences[frameIndex], VK_TRUE,
                              UINT64_MAX);
     if(fenceResult == VK_ERROR_DEVICE_LOST){
         assert(!"device lost\n");
     }
+    }
+
+    VK_CHECK(vkResetCommandPool(m_device, commandPools[frameIndex], 0));
 
     if(queryPending[frameIndex]){
         queryPending[frameIndex] = false;
@@ -2308,6 +2335,8 @@ int main(int argc, char** argv) {
 	frameDesc.descriptorOffsetEnd = frameDesc.descriptorOffset + DESCRIPTOR_LIMIT_FRAME;
 
     uint32_t imageIndex = 0;
+    {
+        ZoneScopedN("Acquire");
     VkResult acquireResult = vkAcquireNextImageKHR(
         m_device, swapchain.swapchain, UINT64_MAX,
         availableSemaphore[frameIndex], VK_NULL_HANDLE, &imageIndex);
@@ -2317,7 +2346,7 @@ int main(int argc, char** argv) {
     }
 
     VK_CHECK(acquireResult);
-
+    }
     VK_CHECK(vkResetFences(m_device, 1, &renderFences[frameIndex]));
 
     Image& depthTarget = depthTargets[frameIndex];
@@ -2478,6 +2507,8 @@ int main(int argc, char** argv) {
 	passInfo.pColorAttachments = gbufferAttachments;
 	passInfo.pDepthAttachment = &depthAttachment;
 
+	{
+	    TracyVkZone(tracyVk,commandBuffer,"gBuffer");
 	vkCmdBeginRendering(commandBuffer, &passInfo);
 
 	VkViewport viewport = { 0, float(swapchain.height), float(swapchain.width), -float(swapchain.height), 0, 1 };
@@ -2522,6 +2553,7 @@ int main(int argc, char** argv) {
 	}
 
 	vkCmdEndRendering(commandBuffer);
+	}
 
 	VkImageLayout membarOldLayout = VK_IMAGE_LAYOUT_GENERAL;
 	if(frameInfo.resetHistory){
@@ -2689,7 +2721,10 @@ int main(int argc, char** argv) {
 
 	uint32_t groupsX = (swapchain.width+7)/8;
 	uint32_t groupsY = (swapchain.height+7)/8;
+	{
+	    TracyVkZone(tracyVk,commandBuffer,"ReSTIR_initial");
 	vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
+	}
 
 	VkBufferMemoryBarrier2 interBarr{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
 	interBarr.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -2708,7 +2743,11 @@ int main(int argc, char** argv) {
 
     vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,shadingProgram.pipeline);
     pushDescriptorsAndConstants(commandBuffer,frameDesc,shadingProgram,shadingDescriptors,frameInfo);
+
+    {
+        TracyVkZone(tracyVk,commandBuffer,"ReSTIR_shade");
     vkCmdDispatch(commandBuffer,groupsX,groupsY,1);
+    }
 
     {
         VkImageMemoryBarrier2 uiBarr{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -2728,6 +2767,8 @@ int main(int argc, char** argv) {
         vkCmdPipelineBarrier2(commandBuffer,&UIDep);
     }
 
+    {
+        ZoneScopedN("nuklearConv");
     static const nk_draw_vertex_layout_element vLayout[] = {
         {NK_VERTEX_POSITION,NK_FORMAT_FLOAT,offsetof(UIVertex,pos)},
         {NK_VERTEX_TEXCOORD,NK_FORMAT_FLOAT,offsetof(UIVertex,uv)},
@@ -2768,8 +2809,9 @@ int main(int argc, char** argv) {
     UIInfo.pColorAttachments = &UIInfoAttachment;
     UIInfo.pDepthAttachment = VK_NULL_HANDLE;
 
+    {
     vkCmdBeginRendering(commandBuffer,&UIInfo);
-
+    TracyVkZone(tracyVk,commandBuffer,"UI");
     vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,UIProgram.pipeline);
     VkDeviceSize buffOffset = 0;
     vkCmdBindVertexBuffers(commandBuffer,0,1,&nkVertBuffers[frameIndex].buffer,&buffOffset);
@@ -2804,7 +2846,11 @@ int main(int argc, char** argv) {
     nk_clear(&nkContext);
 
     vkCmdEndRendering(commandBuffer);
+    }
+    }
 
+    {
+        ZoneScopedN("Present");
 	transitionImage(commandBuffer, swapchain.images[imageIndex],
     	VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -2812,6 +2858,8 @@ int main(int argc, char** argv) {
 	vkCmdWriteTimestamp2(commandBuffer,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,timeStampPool,
 	    frameIndex*2+1);
 	queryPending[frameIndex] = true;
+
+	TracyVkCollect(tracyVk,commandBuffer);
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
     VkCommandBufferSubmitInfo commandBufferSubmitInfo =
@@ -2856,6 +2904,7 @@ int main(int argc, char** argv) {
 
     cpuStats.push(currTime);
     VK_CHECK(vkQueuePresentKHR(graphicsQueue, &presentInfo));
+    }
 
     frameInfo.resetHistory = 0;
     frameInfo.count++;
@@ -2909,9 +2958,10 @@ int main(int argc, char** argv) {
   for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
     vkDestroyCommandPool(m_device, commandPools[i], nullptr);
 
-  vkDestroySwapchainKHR(m_device, swapchain.swapchain, nullptr);
+
   for (VkImageView view : swapchain.imageViews)
     vkDestroyImageView(m_device, view, nullptr);
+  vkDestroySwapchainKHR(m_device, swapchain.swapchain, nullptr);
 
   vkDestroyDevice(m_device, nullptr);
   vkb::destroy_debug_utils_messenger(instance, debug_callback);
