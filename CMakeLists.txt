@@ -23,9 +23,13 @@ target_compile_definitions(Lycaon PRIVATE
   GLM_FORCE_QUAT_DATA_XYZW GLM_FORCE_QUAT_CTOR_XYZW
   GLM_FORCE_DEPTH_ZERO_TO_ONE NK_INCLUDE_FIXED_TYPES
   NK_INCLUDE_DEFAULT_ALLOCATOR NK_INCLUDE_STANDARD_VARARGS
-    NK_INCLUDE_VERTEX_BUFFER_OUTPUT
-    NK_INCLUDE_FONT_BAKING
-    NK_INCLUDE_DEFAULT_FONT)
+  NK_INCLUDE_VERTEX_BUFFER_OUTPUT
+  NK_INCLUDE_FONT_BAKING
+  NK_INCLUDE_DEFAULT_FONT)
+target_compile_definitions(Lycaon PRIVATE
+  $<$<CONFIG:Debug>:_DEBUG;DEBUG;BUILD_CONFIG_DEBUG>
+  $<$<CONFIG:Release>:BUILD_CONFIG_RELEASE>)
+
 target_include_directories(Lycaon PRIVATE
     dependencies/glm dependencies/nuklear dependencies/cgltf dependencies/fpng/src/ dependencies/stb dependencies/bcdec "$ENV{VULKAN_SDK}/Include")
 target_link_directories(Lycaon PRIVATE "$ENV{VULKAN_SDK}/Lib")
@@ -88,6 +92,10 @@ find_program(DXC dxc
 set(SPIRV_OUTPUT_DIR "${PROJECT_BINARY_DIR}/$<CONFIG>/spirv/")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/$<CONFIG>")
 
+set(DXC_CONFIG_FLAGS "$<$<CONFIG:Debug>:-fspv-debug=vulkan-with-source>"
+  "$<$<CONFIG:Debug>:-Od>"
+  "$<$<NOT:$<CONFIG:Debug>>:-O3>")
+
 function(get_hlsl_profile FILENAME OUT_PROFILE OUT_ENTRY)
   get_filename_component(NAME_ONLY ${FILENAME} NAME)
   set(${OUT_ENTRY} "main" PARENT_SCOPE)
@@ -141,9 +149,13 @@ foreach(HLSL ${HLSL_SOURCE_FILES})
   add_custom_command(
         OUTPUT ${SPIRV}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SPIRV_OUTPUT_DIR}"
-        COMMAND ${DXC} -spirv -HV 2021 -fspv-extension=SPV_EXT_mesh_shader
-        -fspv-extension=SPV_EXT_descriptor_indexing -fspv-debug=vulkan-with-source
-        -fspv-extension=SPV_KHR_ray_query -fspv-extension=SPV_KHR_physical_storage_buffer -fspv-target-env=vulkan1.3
+        COMMAND ${DXC} -spirv -HV 2021
+        -fspv-extension=SPV_EXT_mesh_shader
+        -fspv-extension=SPV_EXT_descriptor_indexing
+        -fspv-extension=SPV_KHR_ray_query
+        -fspv-extension=SPV_KHR_physical_storage_buffer
+        -fspv-target-env=vulkan1.3
+        ${DXC_CONFIG_FLAGS}
         -T ${PROFILE} ${DXC_ENTRY_FLAG} ${HLSL} -Fo ${SPIRV}
         DEPENDS ${HLSL} ${HLSL_HEADER_FILES})
   list(APPEND SPIRV_BINARY_FILES ${SPIRV})
