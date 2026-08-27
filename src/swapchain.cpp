@@ -21,14 +21,15 @@ VkFormat getSwapchainFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surfac
 	return formats[0].format;
 }
 
-void createSwapchain(Swapchain& result, VkFormat format, GLFWwindow* window, vkb::SwapchainBuilder swapchainBuilder, VkSwapchainKHR old, bool vsyncEnabled){
+void createSwapchain(Swapchain& result, VkFormat format, GLFWwindow* window,
+        vkb::SwapchainBuilder swapchainBuilder, VkSwapchainKHR old, VkPresentModeKHR presentMode){
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
     vkb::Swapchain swapchain_return = swapchainBuilder
         .set_old_swapchain(old)
         .set_desired_format(VkSurfaceFormatKHR{ .format = format, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
-        .set_desired_present_mode(vsyncEnabled ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
+        .set_desired_present_mode(presentMode)
         .set_desired_extent(width, height)
         .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
         .build().value();
@@ -37,13 +38,14 @@ void createSwapchain(Swapchain& result, VkFormat format, GLFWwindow* window, vkb
     result.swapchain = swapchain_return.swapchain;
     result.width = width;
     result.height = height;
+    result.presentMode = presentMode;
     result.imageCount = swapchain_return.image_count;
     result.images = swapchain_return.get_images().value();
     result.imageViews = swapchain_return.get_image_views().value();
 }
 
 SwapchainStatus updateSwapchain(Swapchain& result, VkDevice device, GLFWwindow* window,
-    vkb::SwapchainBuilder swapchainBuilder, VkFormat format, bool vsyncEnabled){
+    vkb::SwapchainBuilder swapchainBuilder, VkFormat format, VkPresentModeKHR presentMode){
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
@@ -51,12 +53,14 @@ SwapchainStatus updateSwapchain(Swapchain& result, VkDevice device, GLFWwindow* 
         return Swapchain_NotReady;
     }
 
-    if(result.width == width && result.height == height && !result.bad){
+    if(result.width == width && result.height == height && !result.bad
+        && result.presentMode == presentMode){
         return Swapchain_Ready;
     }
 
     Swapchain old = result;
-    createSwapchain(result,format,window,swapchainBuilder,old.swapchain,vsyncEnabled);
+    createSwapchain(result,format,window,swapchainBuilder,
+        old.swapchain,presentMode);
 
     VK_CHECK(vkDeviceWaitIdle(device));
 
@@ -68,4 +72,22 @@ SwapchainStatus updateSwapchain(Swapchain& result, VkDevice device, GLFWwindow* 
 
     vkDestroySwapchainKHR(device, old.swapchain,nullptr);
     return Swapchain_Resized;
+}
+
+VkPresentModeKHR pickPresentMode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, bool vsyncEnabled){
+    if(vsyncEnabled) return VK_PRESENT_MODE_FIFO_KHR;
+
+    uint32_t modeCount = 0;
+    VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,surface,&modeCount,nullptr));
+    std::vector<VkPresentModeKHR> modes(modeCount);
+    VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,surface,&modeCount,modes.data()));
+
+    auto has = [&](VkPresentModeKHR mode){
+        return std::find(modes.begin(),modes.end(),mode) != modes.end();
+    };
+
+    if(has(VK_PRESENT_MODE_IMMEDIATE_KHR)) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    if(has(VK_PRESENT_MODE_MAILBOX_KHR)) return VK_PRESENT_MODE_MAILBOX_KHR;
+
+    return VK_PRESENT_MODE_FIFO_KHR;
 }

@@ -1408,11 +1408,11 @@ int main(int argc, char** argv) {
 
   vkb::InstanceBuilder builder;
 
-  bool validation_layers = false;
-#ifndef _DEBUG
-  validation_layers = true;
-#endif
-
+  #ifndef BUILD_CONFIG_DEBUG
+        constexpr bool validation_layers =  false;
+  #else
+        constexpr bool validation_layers =  true;
+  #endif
   VK_CHECK(volkInitialize());
 
   auto instance_return = builder.set_app_name("Lycaon")
@@ -1533,8 +1533,12 @@ int main(int argc, char** argv) {
       VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
       VK_IMAGE_USAGE_STORAGE_BIT);
 
+  VkPresentModeKHR vsyncMode   = pickPresentMode(m_physicalDevice, surface, true);
+  VkPresentModeKHR noVsyncMode = pickPresentMode(m_physicalDevice, surface, false);
+
   Swapchain swapchain{};
-  createSwapchain(swapchain, swapchainFormat, window, swapchainBuilder, {},vsyncEnabled);
+  createSwapchain(swapchain, swapchainFormat, window, swapchainBuilder,
+      {},vsyncEnabled ? vsyncMode : noVsyncMode);
 
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
@@ -2169,7 +2173,8 @@ int main(int argc, char** argv) {
     {
         ZoneScopedN("SwapchainCheck");
     SwapchainStatus swapchainStatus = updateSwapchain(
-        swapchain, m_device, window, swapchainBuilder, swapchainFormat, vsyncEnabled);
+        swapchain, m_device, window, swapchainBuilder, swapchainFormat,
+        vsyncEnabled ? vsyncMode : noVsyncMode);
     if (swapchainStatus == Swapchain_NotReady) {
         nk_clear(&nkContext);
         continue;
@@ -2299,6 +2304,7 @@ int main(int argc, char** argv) {
                 }
                 nk_labelf(&nkContext,NK_TEXT_LEFT,"T: Toggle UI");
                 nk_labelf(&nkContext,NK_TEXT_LEFT,"F: Screenshot");
+                nk_labelf(&nkContext,NK_TEXT_LEFT,"V: Disable/Enable Vsync");
                 nk_labelf(&nkContext,NK_TEXT_LEFT,"ESC: Quit");
                 nk_labelf(&nkContext,NK_TEXT_LEFT,"Right Click: Hold to move");
                 nk_labelf(&nkContext,NK_TEXT_LEFT,"WASD: To move camera");
@@ -2915,6 +2921,8 @@ int main(int argc, char** argv) {
   vkDeviceWaitIdle(m_device);
 
   vkDestroyQueryPool(m_device,timeStampPool,nullptr);
+
+  TracyVkDestroy(tracyVk);
 
   for(size_t i=0;i<FRAMES_IN_FLIGHT;i++){
     for (Image& image : gbufferTargets[i]) {
